@@ -26,7 +26,7 @@ type EndpointConfig struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: ./gwst <config.yaml>")
+		fmt.Printf("Usage: gwst <config.yaml>\n")
 		os.Exit(1)
 	}
 
