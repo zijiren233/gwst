@@ -33,7 +33,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags '-s -w --extldflags "-static -fpic"' -o gwst-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags '-s -w --extldflags "-static -fpic"' -o gwst-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
 
       - name: Release
         uses: softprops/action-gh-release@v2
