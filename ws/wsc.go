@@ -1,216 +1,261 @@
 package ws
 
 import (
-	"context"
 	"fmt"
-	"math/rand"
+	"io"
 	"net"
-	"strings"
+	"sync"
 	"time"
 
-	tls "github.com/refraction-networking/utls"
-	"golang.org/x/net/websocket"
+	"github.com/zijiren233/gencontainer/rwmap"
 )
 
-var randomFingerprint tls.ClientHelloID
-
-func init() {
-	modernFingerprints := []tls.ClientHelloID{
-		tls.HelloChrome_Auto,
-		tls.HelloFirefox_Auto,
-		tls.HelloEdge_Auto,
-		tls.HelloSafari_Auto,
-		tls.HelloIOS_Auto,
-	}
-	randomFingerprint = modernFingerprints[rand.Intn(len(modernFingerprints))]
+type UDPConn struct {
+	*net.UDPConn
+	readDeadline  time.Time
+	writeDeadline time.Time
 }
 
-func Connect(ctx context.Context, host, path string, tlsEnabled, insecure bool, udp bool, dialer *net.Dialer) (net.Conn, error) {
-	host, port, err := parseHostAndPort(host, tlsEnabled)
-	if err != nil {
-		return nil, err
-	}
-
-	path = ensureLeadingSlash(path)
-
-	if dialer == nil {
-		dialer = &net.Dialer{}
-	}
-
-	var ws *websocket.Conn
-	if tlsEnabled {
-		ws, err = connectTLS(ctx, host, port, path, insecure, udp, dialer)
-	} else {
-		ws, err = connectNonTLS(ctx, host, port, path, udp, dialer)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	ws.PayloadType = websocket.BinaryFrame
-	return ws, nil
-}
-
-func parseHostAndPort(host string, tlsEnabled bool) (string, string, error) {
-	host = strings.TrimPrefix(strings.TrimPrefix(host, "ws://"), "wss://")
-	domain, port, err := net.SplitHostPort(host)
-	if err != nil {
-		if err.Error() == "missing port in address" {
-			port = defaultPort(tlsEnabled)
-			return host, port, nil
-		}
-		return "", "", fmt.Errorf("failed to split host and port: %w", err)
-	}
-	return domain, port, nil
-}
-
-func defaultPort(tlsEnabled bool) string {
-	if tlsEnabled {
-		return "443"
-	}
-	return "80"
-}
-
-func ensureLeadingSlash(path string) string {
-	if !strings.HasPrefix(path, "/") {
-		return "/" + path
-	}
-	return path
-}
-
-func connectTLS(ctx context.Context, domain, port, path string, insecure, isUdp bool, dialer *net.Dialer) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("wss", domain, port, path, isUdp)
-	if err != nil {
-		return nil, err
-	}
-
-	config := &tls.Config{
-		InsecureSkipVerify: insecure,
-		ServerName:         domain,
-	}
-
-	dialConn, err := dialWithTimeout(ctx, dialer, domain, port)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err := createTLSClient(dialConn, config)
-	if err != nil {
-		return nil, err
-	}
-
-	return websocket.NewClient(ws_config, client)
-}
-
-func connectNonTLS(ctx context.Context, domain, port, path string, isUdp bool, dialer *net.Dialer) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("ws", domain, port, path, isUdp)
-	if err != nil {
-		return nil, err
-	}
-
-	ws_config.Dialer = dialer
-	return ws_config.DialContext(ctx)
-}
-
-func createWebsocketConfig(scheme, domain, port, path string, isUdp bool) (*websocket.Config, error) {
-	url := fmt.Sprintf("%s://%s:%s%s", scheme, domain, port, path)
-	ws_config, err := websocket.NewConfig(url, url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create websocket config: %w", err)
-	}
-	setReqHeader(ws_config, isUdp)
-	return ws_config, nil
-}
-
-func setReqHeader(ws_config *websocket.Config, isUdp bool) {
-	ws_config.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
-	protocol := "tcp"
-	if isUdp {
-		protocol = "udp"
-	}
-	ws_config.Header.Set("X-Protocol", protocol)
-}
-
-func dialWithTimeout(ctx context.Context, dialer *net.Dialer, domain, port string) (net.Conn, error) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
-	return dialer.DialContext(timeoutCtx, "tcp", fmt.Sprintf("%s:%s", domain, port))
-}
-
-func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
-	client := tls.UClient(conn, config, tls.HelloCustom)
-	spec, err := tls.UTLSIdToSpec(randomFingerprint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get utls spec: %w", err)
-	}
-
-	for _, ext := range spec.Extensions {
-		if alpnExt, ok := ext.(*tls.ALPNExtension); ok {
-			alpnExt.AlpnProtocols = []string{"http/1.1"}
+func (c *UDPConn) Read(b []byte) (int, error) {
+	if !c.readDeadline.IsZero() {
+		if err := c.UDPConn.SetReadDeadline(c.readDeadline); err != nil {
+			return 0, err
 		}
 	}
+	return c.UDPConn.Read(b)
+}
 
-	if err := client.ApplyPreset(&spec); err != nil {
-		return nil, fmt.Errorf("failed to apply utls spec: %w", err)
+func (c *UDPConn) Write(b []byte) (int, error) {
+	if !c.writeDeadline.IsZero() {
+		if err := c.UDPConn.SetWriteDeadline(c.writeDeadline); err != nil {
+			return 0, err
+		}
+	}
+	return c.UDPConn.Write(b)
+}
+
+func (c *UDPConn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
+	return nil
+}
+
+func (c *UDPConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return nil
+}
+
+type udpConnInfo struct {
+	net.Conn
+	lock    sync.RWMutex
+	lastRec time.Time
+}
+
+func (u *udpConnInfo) Read(b []byte) (int, error) {
+	n, err := u.Conn.Read(b)
+	u.SetLastRec(time.Now())
+	return n, err
+}
+
+func (u *udpConnInfo) Write(b []byte) (int, error) {
+	n, err := u.Conn.Write(b)
+	u.SetLastRec(time.Now())
+	return n, err
+}
+
+func (u *udpConnInfo) GetLastRec() time.Time {
+	u.lock.RLock()
+	defer u.lock.RUnlock()
+	return u.lastRec
+}
+
+func (u *udpConnInfo) SetLastRec(t time.Time) {
+	u.lock.Lock()
+	defer u.lock.Unlock()
+	u.lastRec = t
+}
+
+type WsForwarder struct {
+	listenAddr    string
+	wsDialer      *WsDialer
+	udpConns      rwmap.RWMap[string, *udpConnInfo]
+	tcpListener   net.Listener
+	udpConn       *net.UDPConn
+	cleanupTicker *time.Ticker
+	done          chan struct{}
+}
+
+func NewWsForwarder(listenAddr string, wsDialer *WsDialer) *WsForwarder {
+	wf := &WsForwarder{
+		listenAddr: listenAddr,
+		wsDialer:   wsDialer,
+		done:       make(chan struct{}),
+	}
+	go wf.cleanupIdleConnections()
+	return wf
+}
+
+func (wf *WsForwarder) cleanupIdleConnections() {
+	wf.cleanupTicker = time.NewTicker(30 * time.Second)
+	defer wf.cleanupTicker.Stop()
+
+	for {
+		select {
+		case <-wf.cleanupTicker.C:
+			now := time.Now()
+			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
+				if now.Sub(value.GetLastRec()) > 3*time.Minute {
+					if wf.udpConns.CompareAndDelete(key, value) {
+						value.Conn.Close()
+					}
+				}
+				return true
+			})
+		case <-wf.done:
+			return
+		}
+	}
+}
+
+func (wf *WsForwarder) Serve() error {
+	var err error
+	wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
+	if err != nil {
+		return fmt.Errorf("failed to start TCP listener: %w", err)
 	}
 
-	return client, nil
-}
+	udpAddr, err := net.ResolveUDPAddr("udp", wf.listenAddr)
+	if err != nil {
+		return fmt.Errorf("failed to resolve UDP address: %w", err)
+	}
 
-type WsClient struct {
-	host       string
-	path       string
-	tlsEnabled bool
-	insecure   bool
-	dialer     *net.Dialer
-}
+	wf.udpConn, err = net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		wf.tcpListener.Close()
+		return fmt.Errorf("failed to start UDP listener: %w", err)
+	}
 
-type WsClientOption func(*WsClient)
+	go wf.handleUDP()
 
-func WithDialer(dialer *net.Dialer) WsClientOption {
-	return func(wc *WsClient) {
-		wc.dialer = dialer
+	for {
+		conn, err := wf.tcpListener.Accept()
+		if err != nil {
+			select {
+			case <-wf.done:
+				return nil
+			default:
+				fmt.Printf("Failed to accept TCP connection: %v\n", err)
+				continue
+			}
+		}
+		go wf.handleTCP(conn)
 	}
 }
 
-func WithDialTLS(insecure bool) WsClientOption {
-	return func(wc *WsClient) {
-		wc.tlsEnabled = true
-		wc.insecure = insecure
+func (wf *WsForwarder) Close() error {
+	close(wf.done)
+	var errs []error
+	if wf.tcpListener != nil {
+		errs = append(errs, wf.tcpListener.Close())
+	}
+	if wf.udpConn != nil {
+		errs = append(errs, wf.udpConn.Close())
+	}
+	if wf.cleanupTicker != nil {
+		wf.cleanupTicker.Stop()
+	}
+	wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
+		value.Conn.Close()
+		return true
+	})
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing WsForwarder: %v", errs)
+	}
+	return nil
+}
+
+func (wf *WsForwarder) handleTCP(conn net.Conn) {
+	defer conn.Close()
+
+	wsConn, err := wf.wsDialer.DialTCP()
+	if err != nil {
+		fmt.Printf("Failed to dial WebSocket: %v\n", err)
+		return
+	}
+	defer wsConn.Close()
+
+	go io.Copy(wsConn, conn)
+	io.Copy(conn, wsConn)
+}
+
+func (wf *WsForwarder) handleUDP() {
+	buffer := make([]byte, 65507)
+	for {
+		select {
+		case <-wf.done:
+			return
+		default:
+			n, remoteAddr, err := wf.udpConn.ReadFromUDP(buffer)
+			if err != nil {
+				fmt.Printf("Failed to read from UDP: %v\n", err)
+				continue
+			}
+
+			key := remoteAddr.String()
+			value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
+			if !loaded {
+				if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
+					fmt.Printf("Failed to setup new UDP connection: %v\n", err)
+					wf.udpConns.CompareAndDelete(key, value)
+					continue
+				}
+			}
+
+			_, err = value.Write(buffer[:n])
+			if err != nil {
+				fmt.Printf("Failed to write to UDP connection: %v\n", err)
+				wf.udpConns.CompareAndDelete(key, value)
+				value.Conn.Close()
+			}
+		}
 	}
 }
 
-func NewWsClient(host, path string, options ...WsClientOption) *WsClient {
-	wc := &WsClient{
-		host: host,
-		path: path,
+func (wf *WsForwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAddr) error {
+	newConn, err := wf.wsDialer.DialUDP()
+	if err != nil {
+		return fmt.Errorf("failed to dial WebSocket for UDP: %w", err)
 	}
-	for _, option := range options {
-		option(wc)
+
+	value.Conn = newConn
+	go wf.handleUDPResponse(value, remoteAddr)
+	return nil
+}
+
+func (wf *WsForwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
+	defer func() {
+		wf.udpConns.CompareAndDelete(remoteAddr.String(), value)
+		value.Conn.Close()
+	}()
+
+	buffer := make([]byte, 65507)
+	for {
+		select {
+		case <-wf.done:
+			return
+		default:
+			n, err := value.Read(buffer)
+			if err != nil {
+				if err != io.EOF {
+					fmt.Printf("Failed to read from WebSocket: %v\n", err)
+				}
+				return
+			}
+
+			_, err = wf.udpConn.WriteToUDP(buffer[:n], remoteAddr)
+			if err != nil {
+				fmt.Printf("Failed to write to UDP: %v\n", err)
+				return
+			}
+		}
 	}
-	return wc
-}
-
-func (wc *WsClient) Dial(network string) (net.Conn, error) {
-	return wc.DialContext(context.Background(), network)
-}
-
-func (wc *WsClient) DialContext(ctx context.Context, network string) (net.Conn, error) {
-	return Connect(ctx, wc.host, wc.path, wc.tlsEnabled, wc.insecure, strings.HasPrefix(network, "udp"), wc.dialer)
-}
-
-func (wc *WsClient) DialUDP() (net.Conn, error) {
-	return wc.Dial("udp")
-}
-
-func (wc *WsClient) DialContextUDP(ctx context.Context) (net.Conn, error) {
-	return wc.DialContext(ctx, "udp")
-}
-
-func (wc *WsClient) DialTCP() (net.Conn, error) {
-	return wc.Dial("tcp")
-}
-
-func (wc *WsClient) DialContextTCP(ctx context.Context) (net.Conn, error) {
-	return wc.DialContext(ctx, "tcp")
 }

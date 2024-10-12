@@ -16,8 +16,8 @@ type WsServer struct {
 	server         *http.Server
 	stopCleanup    chan struct{}
 	path           string
-	host           string
 	tls            bool
+	serverName     string
 	certFile       string
 	keyFile        string
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
@@ -25,11 +25,12 @@ type WsServer struct {
 
 type WsServerOption func(*WsServer)
 
-func WithTLS(certFile, keyFile string) WsServerOption {
+func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 	return func(ps *WsServer) {
 		ps.tls = true
 		ps.certFile = certFile
 		ps.keyFile = keyFile
+		ps.serverName = serverName
 	}
 }
 
@@ -40,13 +41,12 @@ func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certific
 	}
 }
 
-func NewWsServer(listenAddr, targetAddr, host, path string, opts ...WsServerOption) *WsServer {
+func NewWsServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *WsServer {
 	ps := &WsServer{
 		listenAddr:  listenAddr,
 		targetAddr:  targetAddr,
 		stopCleanup: make(chan struct{}),
 		path:        path,
-		host:        host,
 	}
 	for _, opt := range opts {
 		opt(ps)
@@ -64,12 +64,13 @@ func (ps *WsServer) Serve(opts ...selfSignedCertOption) error {
 				GetCertificate: ps.GetCertificate,
 			}
 		} else if ps.certFile == "" && ps.keyFile == "" {
-			cert, err := GenerateSelfSignedCert(ps.host, opts...)
+			cert, err := GenerateSelfSignedCert(ps.serverName, opts...)
 			if err != nil {
 				return fmt.Errorf("failed to generate self-signed certificate: %v", err)
 			}
 			ps.server.TLSConfig = &tls.Config{
 				Certificates: []tls.Certificate{cert},
+				ServerName:   ps.serverName,
 			}
 		}
 		return ps.server.ListenAndServeTLS(ps.certFile, ps.keyFile)
