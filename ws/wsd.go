@@ -29,23 +29,79 @@ var defaultDialer = &net.Dialer{
 	Timeout: time.Second * 5,
 }
 
-func Connect(ctx context.Context, addr, path string, tls bool, serverName string, insecure bool, udp bool, dialer *net.Dialer) (net.Conn, error) {
-	addr, port, err := parseHostAndPort(addr, tls)
+type ConnectConfig struct {
+	TargetAddr string
+	Path       string
+	Target     string
+	TLS        bool
+	ServerName string
+	Insecure   bool
+	UDP        bool
+	Dialer     *net.Dialer
+}
+
+type ConnectOption func(*ConnectConfig)
+
+func WithTargetAddr(targetAddr string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.TargetAddr = targetAddr
+	}
+}
+
+func WithPath(path string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Path = path
+	}
+}
+
+func WithTarget(target string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Target = target
+	}
+}
+
+func WithDialTLS(serverName string, insecure bool) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.TLS = true
+		c.ServerName = serverName
+		c.Insecure = insecure
+	}
+}
+
+func WithUDP() ConnectOption {
+	return func(c *ConnectConfig) {
+		c.UDP = true
+	}
+}
+
+func WithDialer(dialer *net.Dialer) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Dialer = dialer
+	}
+}
+
+func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
+	cfg := &ConnectConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	if cfg.Dialer == nil {
+		cfg.Dialer = defaultDialer
+	}
+
+	addr, port, err := parseHostAndPort(cfg.TargetAddr, cfg.TLS)
 	if err != nil {
 		return nil, err
 	}
 
-	path = ensureLeadingSlash(path)
-
-	if dialer == nil {
-		dialer = defaultDialer
-	}
+	cfg.Path = ensureLeadingSlash(cfg.Path)
 
 	var ws *websocket.Conn
-	if tls {
-		ws, err = connectTLS(ctx, addr, port, path, serverName, insecure, udp, dialer)
+	if cfg.TLS {
+		ws, err = connectTLS(ctx, addr, port, cfg)
 	} else {
-		ws, err = connectNonTLS(ctx, addr, port, path, udp, dialer)
+		ws, err = connectNonTLS(ctx, addr, port, cfg)
 	}
 	if err != nil {
 		return nil, err
@@ -82,22 +138,22 @@ func ensureLeadingSlash(path string) string {
 	return path
 }
 
-func connectTLS(ctx context.Context, addr, port, path, serverName string, insecure, isUdp bool, dialer *net.Dialer) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("wss", addr, port, path, isUdp, dialer)
+func connectTLS(ctx context.Context, addr, port string, cfg *ConnectConfig) (*websocket.Conn, error) {
+	ws_config, err := createWebsocketConfig("wss", addr, port, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	if serverName == "" {
-		serverName = addr
+	if cfg.ServerName == "" {
+		cfg.ServerName = addr
 	}
 
 	config := &tls.Config{
-		InsecureSkipVerify: insecure,
-		ServerName:         serverName,
+		InsecureSkipVerify: cfg.Insecure,
+		ServerName:         cfg.ServerName,
 	}
 
-	dialConn, err := dialWithTimeout(ctx, dialer, addr, port)
+	dialConn, err := dialWithTimeout(ctx, cfg.Dialer, addr, port)
 	if err != nil {
 		return nil, err
 	}
@@ -110,32 +166,33 @@ func connectTLS(ctx context.Context, addr, port, path, serverName string, insecu
 	return websocket.NewClient(ws_config, client)
 }
 
-func connectNonTLS(ctx context.Context, addr, port, path string, isUdp bool, dialer *net.Dialer) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("ws", addr, port, path, isUdp, dialer)
+func connectNonTLS(ctx context.Context, addr, port string, cfg *ConnectConfig) (*websocket.Conn, error) {
+	ws_config, err := createWebsocketConfig("ws", addr, port, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return ws_config.DialContext(ctx)
 }
 
-func createWebsocketConfig(scheme, addr, port, path string, isUdp bool, dialer *net.Dialer) (*websocket.Config, error) {
-	url := fmt.Sprintf("%s://%s:%s%s", scheme, addr, port, path)
+func createWebsocketConfig(scheme, addr, port string, cfg *ConnectConfig) (*websocket.Config, error) {
+	url := fmt.Sprintf("%s://%s:%s%s", scheme, addr, port, cfg.Path)
 	ws_config, err := websocket.NewConfig(url, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
-	setReqHeader(ws_config, isUdp)
-	ws_config.Dialer = dialer
+	setReqHeader(ws_config, cfg.UDP, cfg.Target)
+	ws_config.Dialer = cfg.Dialer
 	return ws_config, nil
 }
 
-func setReqHeader(ws_config *websocket.Config, isUdp bool) {
+func setReqHeader(ws_config *websocket.Config, isUdp bool, target string) {
 	ws_config.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
-	protocol := "tcp"
-	if isUdp {
-		protocol = "udp"
+	if target != "" {
+		ws_config.Header.Set("X-Target", target)
 	}
-	ws_config.Header.Set("X-Protocol", protocol)
+	if isUdp {
+		ws_config.Header.Set("X-Protocol", "udp")
+	}
 }
 
 func dialWithTimeout(ctx context.Context, dialer *net.Dialer, addr, port string) (net.Conn, error) {
@@ -165,37 +222,18 @@ func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
 }
 
 type WsDialer struct {
-	addr       string
-	path       string
-	tls        bool
-	serverName string
-	insecure   bool
-	dialer     *net.Dialer
+	config ConnectConfig
 }
 
-type WsClientOption func(*WsDialer)
-
-func WithNetDialer(dialer *net.Dialer) WsClientOption {
-	return func(wc *WsDialer) {
-		wc.dialer = dialer
-	}
-}
-
-func WithDialTLS(serverName string, insecure bool) WsClientOption {
-	return func(wc *WsDialer) {
-		wc.tls = true
-		wc.insecure = insecure
-		wc.serverName = serverName
-	}
-}
-
-func NewWsDialer(addr, path string, options ...WsClientOption) *WsDialer {
+func NewWsDialer(addr, path string, options ...ConnectOption) *WsDialer {
 	wc := &WsDialer{
-		addr: addr,
-		path: path,
+		config: ConnectConfig{
+			TargetAddr: addr,
+			Path:       path,
+		},
 	}
 	for _, option := range options {
-		option(wc)
+		option(&wc.config)
 	}
 	return wc
 }
@@ -205,7 +243,9 @@ func (wc *WsDialer) Dial(network string) (net.Conn, error) {
 }
 
 func (wc *WsDialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
-	return Connect(ctx, wc.addr, wc.path, wc.tls, wc.serverName, wc.insecure, strings.HasPrefix(network, "udp"), wc.dialer)
+	cfg := wc.config
+	cfg.UDP = strings.HasPrefix(network, "udp")
+	return Connect(ctx, func(c *ConnectConfig) { *c = cfg })
 }
 
 func (wc *WsDialer) DialUDP() (net.Conn, error) {

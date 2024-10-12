@@ -1,0 +1,30 @@
+# Server configuration
+- is_client: false
+  listen_addr: ":8080"
+  target_addr: "localhost:80"
+  path: "/ws"
+  tls: true
+  cert_file: "/path/to/cert.pem"
+  key_file: "/path/to/key.pem"
+  server_name: "example.com"
+
+# Client configuration
+- is_client: true
+  listen_addr: ":9090"
+  target_addr: "example.com:8080"
+  path: "/ws"
+  tls: true
+  server_name: "example.com"
+  insecure: false
+
+# Another server configuration (without TLS)
+- is_client: false
+  listen_addr: ":8081"
+  target_addr: "localhost:8000"
+  path: "/websocket"
+
+# Another client configuration (without TLS)
+- is_client: true
+  listen_addr: ":9091"
+  target_addr: "example.org:8081"
+  path: "/websocket"

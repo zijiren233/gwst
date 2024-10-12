@@ -13,6 +13,7 @@ import (
 type WsServer struct {
 	listenAddr     string
 	targetAddr     string
+	allowedTargets map[string]struct{}
 	server         *http.Server
 	stopCleanup    chan struct{}
 	path           string
@@ -31,6 +32,18 @@ func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 		ps.certFile = certFile
 		ps.keyFile = keyFile
 		ps.serverName = serverName
+	}
+}
+
+func WithAllowedTargets(allowedTargets []string) WsServerOption {
+	return func(ps *WsServer) {
+		if len(allowedTargets) == 0 {
+			return
+		}
+		ps.allowedTargets = make(map[string]struct{})
+		for _, target := range allowedTargets {
+			ps.allowedTargets[target] = struct{}{}
+		}
 	}
 }
 
@@ -91,17 +104,43 @@ func (ps *WsServer) handleWebSocket(ws *websocket.Conn) {
 
 	ws.PayloadType = websocket.BinaryFrame
 
-	protocol := ws.Request().Header.Get("X-Protocol")
+	protocol := ps.getProtocol(ws.Request().Header.Get("X-Protocol"))
+	target, err := ps.getTarget(ws.Request().Header.Get("X-Target"))
+	if err != nil {
+		fmt.Printf("Error getting target: %v\n", err)
+		return
+	}
 
-	if protocol == "udp" {
-		ps.handle(ws, "udp")
-	} else {
-		ps.handle(ws, "tcp")
+	ps.handle(ws, protocol, target)
+}
+
+func (ps *WsServer) getProtocol(requestProtocol string) string {
+	switch requestProtocol {
+	case "udp":
+		return "udp"
+	default:
+		return "tcp"
 	}
 }
 
-func (ps *WsServer) handle(ws *websocket.Conn, network string) {
-	conn, err := net.Dial(network, ps.targetAddr)
+func (ps *WsServer) getTarget(requestTarget string) (string, error) {
+	if requestTarget == "" || requestTarget == ps.targetAddr || len(ps.allowedTargets) == 0 {
+		return ps.targetAddr, nil
+	}
+
+	if _, ok := ps.allowedTargets[requestTarget]; !ok {
+		return "", fmt.Errorf("target %s not allowed", requestTarget)
+	}
+
+	return requestTarget, nil
+}
+
+func (ps *WsServer) handle(ws *websocket.Conn, network string, target string) {
+	if target == "" {
+		return
+	}
+
+	conn, err := net.Dial(network, target)
 	if err != nil {
 		fmt.Printf("Failed to connect to target: %v\n", err)
 		return
