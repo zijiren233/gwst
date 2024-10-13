@@ -30,14 +30,15 @@ var defaultDialer = &net.Dialer{
 }
 
 type ConnectConfig struct {
-	TargetAddr string
-	Path       string
-	Target     string
-	TLS        bool
-	ServerName string
-	Insecure   bool
-	UDP        bool
-	Dialer     *net.Dialer
+	TargetAddr  string
+	Path        string
+	Target      string
+	NamedTarget string
+	TLS         bool
+	ServerName  string
+	Insecure    bool
+	UDP         bool
+	Dialer      *net.Dialer
 }
 
 type ConnectOption func(*ConnectConfig)
@@ -57,6 +58,12 @@ func WithPath(path string) ConnectOption {
 func WithTarget(target string) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.Target = target
+	}
+}
+
+func WithNamedTarget(namedTarget string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.NamedTarget = namedTarget
 	}
 }
 
@@ -180,15 +187,18 @@ func createWebsocketConfig(scheme, addr, port string, cfg *ConnectConfig) (*webs
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
-	setReqHeader(ws_config, cfg.UDP, cfg.Target)
+	setReqHeader(ws_config, cfg.UDP, cfg.Target, cfg.NamedTarget)
 	ws_config.Dialer = cfg.Dialer
 	return ws_config, nil
 }
 
-func setReqHeader(ws_config *websocket.Config, isUdp bool, target string) {
+func setReqHeader(ws_config *websocket.Config, isUdp bool, target string, namedTarget string) {
 	ws_config.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
 	if target != "" {
 		ws_config.Header.Set("X-Target", target)
+	}
+	if namedTarget != "" {
+		ws_config.Header.Set("X-Named-Target", namedTarget)
 	}
 	if isUdp {
 		ws_config.Header.Set("X-Protocol", "udp")

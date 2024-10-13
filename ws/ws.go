@@ -15,6 +15,7 @@ type Server struct {
 	listenAddr     string
 	targetAddr     string
 	allowedTargets map[string]struct{}
+	namedTargets   map[string]string
 	server         *http.Server
 	stopCleanup    chan struct{}
 	path           string
@@ -45,6 +46,12 @@ func WithAllowedTargets(allowedTargets []string) WsServerOption {
 		for _, target := range allowedTargets {
 			ps.allowedTargets[target] = struct{}{}
 		}
+	}
+}
+
+func WithNamedTargets(namedTargets map[string]string) WsServerOption {
+	return func(ps *Server) {
+		ps.namedTargets = namedTargets
 	}
 }
 
@@ -106,7 +113,10 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	ws.PayloadType = websocket.BinaryFrame
 
 	protocol := ps.getProtocol(ws.Request().Header.Get("X-Protocol"))
-	target, err := ps.getTarget(ws.Request().Header.Get("X-Target"))
+	target, err := ps.getTarget(
+		ws.Request().Header.Get("X-Target"),
+		ws.Request().Header.Get("X-Named-Target"),
+	)
 	if err != nil {
 		color.Red("Error getting target: %v\n", err)
 		return
@@ -126,7 +136,12 @@ func (ps *Server) getProtocol(requestProtocol string) string {
 	}
 }
 
-func (ps *Server) getTarget(requestTarget string) (string, error) {
+func (ps *Server) getTarget(requestTarget string, namedTarget string) (string, error) {
+	if namedTarget != "" {
+		if target, ok := ps.namedTargets[namedTarget]; ok {
+			return target, nil
+		}
+	}
 	if requestTarget == "" || requestTarget == ps.targetAddr || len(ps.allowedTargets) == 0 {
 		return ps.targetAddr, nil
 	}
