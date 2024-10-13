@@ -74,9 +74,9 @@ func (u *udpConnInfo) SetLastRec(t time.Time) {
 	u.lastRec = t
 }
 
-type WsForwarder struct {
+type Forwarder struct {
 	listenAddr    string
-	wsDialer      *WsDialer
+	wsDialer      *Dialer
 	udpConns      rwmap.RWMap[string, *udpConnInfo]
 	tcpListener   net.Listener
 	udpConn       *net.UDPConn
@@ -84,8 +84,8 @@ type WsForwarder struct {
 	done          chan struct{}
 }
 
-func NewWsForwarder(listenAddr string, wsDialer *WsDialer) *WsForwarder {
-	wf := &WsForwarder{
+func NewForwarder(listenAddr string, wsDialer *Dialer) *Forwarder {
+	wf := &Forwarder{
 		listenAddr: listenAddr,
 		wsDialer:   wsDialer,
 		done:       make(chan struct{}),
@@ -94,7 +94,7 @@ func NewWsForwarder(listenAddr string, wsDialer *WsDialer) *WsForwarder {
 	return wf
 }
 
-func (wf *WsForwarder) cleanupIdleConnections() {
+func (wf *Forwarder) cleanupIdleConnections() {
 	wf.cleanupTicker = time.NewTicker(30 * time.Second)
 	defer wf.cleanupTicker.Stop()
 
@@ -116,7 +116,7 @@ func (wf *WsForwarder) cleanupIdleConnections() {
 	}
 }
 
-func (wf *WsForwarder) Serve() error {
+func (wf *Forwarder) Serve() error {
 	var err error
 	wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
 	if err != nil {
@@ -151,7 +151,7 @@ func (wf *WsForwarder) Serve() error {
 	}
 }
 
-func (wf *WsForwarder) Close() error {
+func (wf *Forwarder) Close() error {
 	close(wf.done)
 	var errs []error
 	if wf.tcpListener != nil {
@@ -173,7 +173,7 @@ func (wf *WsForwarder) Close() error {
 	return nil
 }
 
-func (wf *WsForwarder) handleTCP(conn net.Conn) {
+func (wf *Forwarder) handleTCP(conn net.Conn) {
 	defer conn.Close()
 
 	wsConn, err := wf.wsDialer.DialTCP()
@@ -187,7 +187,7 @@ func (wf *WsForwarder) handleTCP(conn net.Conn) {
 	io.Copy(conn, wsConn)
 }
 
-func (wf *WsForwarder) handleUDP() {
+func (wf *Forwarder) handleUDP() {
 	buffer := make([]byte, 65507)
 	for {
 		select {
@@ -220,7 +220,7 @@ func (wf *WsForwarder) handleUDP() {
 	}
 }
 
-func (wf *WsForwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAddr) error {
+func (wf *Forwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAddr) error {
 	newConn, err := wf.wsDialer.DialUDP()
 	if err != nil {
 		return fmt.Errorf("failed to dial WebSocket for UDP: %w", err)
@@ -231,7 +231,7 @@ func (wf *WsForwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAd
 	return nil
 }
 
-func (wf *WsForwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
+func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
 	defer func() {
 		wf.udpConns.CompareAndDelete(remoteAddr.String(), value)
 		value.Conn.Close()

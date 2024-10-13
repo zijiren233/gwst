@@ -35,7 +35,7 @@ func TestGenerateSelfSignedCertWithECC(t *testing.T) {
 
 func TestWsServerAndDialer(t *testing.T) {
 	go func() {
-		wss := ws.NewWsServer("0.0.0.0:8080", "127.0.0.1:8081", "/ws", ws.WithTLS("", "", "www.microstft.com"))
+		wss := ws.NewServer("0.0.0.0:8080", "127.0.0.1:8081", "/ws", ws.WithTLS("", "", "www.microstft.com"))
 		err := wss.Serve(ws.WithECC())
 		if err != nil {
 			panic(err)
@@ -87,7 +87,7 @@ func TestWsServerAndDialer(t *testing.T) {
 	time.Sleep(time.Second * 2)
 
 	go func() {
-		wsc := ws.NewWsDialer("127.0.0.1:8080", "/ws", ws.WithDialTLS("www.microstft.com", true))
+		wsc := ws.NewDialer("127.0.0.1:8080", "/ws", ws.WithDialTLS("www.microstft.com", true))
 		conn, err := wsc.DialTCP()
 		if err != nil {
 			panic(err)
@@ -100,7 +100,7 @@ func TestWsServerAndDialer(t *testing.T) {
 		}
 	}()
 
-	wsc := ws.NewWsDialer("127.0.0.1:8080", "/ws", ws.WithDialTLS("www.microstft.com", true))
+	wsc := ws.NewDialer("127.0.0.1:8080", "/ws", ws.WithDialTLS("www.microstft.com", true))
 	conn, err := wsc.DialUDP()
 	if err != nil {
 		panic(err)

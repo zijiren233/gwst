@@ -221,12 +221,12 @@ func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
 	return client, nil
 }
 
-type WsDialer struct {
+type Dialer struct {
 	config ConnectConfig
 }
 
-func NewWsDialer(addr, path string, options ...ConnectOption) *WsDialer {
-	wc := &WsDialer{
+func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
+	wc := &Dialer{
 		config: ConnectConfig{
 			TargetAddr: addr,
 			Path:       path,
@@ -238,28 +238,28 @@ func NewWsDialer(addr, path string, options ...ConnectOption) *WsDialer {
 	return wc
 }
 
-func (wc *WsDialer) Dial(network string) (net.Conn, error) {
+func (wc *Dialer) Dial(network string) (net.Conn, error) {
 	return wc.DialContext(context.Background(), network)
 }
 
-func (wc *WsDialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
+func (wc *Dialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
 	cfg := wc.config
 	cfg.UDP = strings.HasPrefix(network, "udp")
 	return Connect(ctx, func(c *ConnectConfig) { *c = cfg })
 }
 
-func (wc *WsDialer) DialUDP() (net.Conn, error) {
+func (wc *Dialer) DialUDP() (net.Conn, error) {
 	return wc.Dial("udp")
 }
 
-func (wc *WsDialer) DialContextUDP(ctx context.Context) (net.Conn, error) {
+func (wc *Dialer) DialContextUDP(ctx context.Context) (net.Conn, error) {
 	return wc.DialContext(ctx, "udp")
 }
 
-func (wc *WsDialer) DialTCP() (net.Conn, error) {
+func (wc *Dialer) DialTCP() (net.Conn, error) {
 	return wc.Dial("tcp")
 }
 
-func (wc *WsDialer) DialContextTCP(ctx context.Context) (net.Conn, error) {
+func (wc *Dialer) DialContextTCP(ctx context.Context) (net.Conn, error) {
 	return wc.DialContext(ctx, "tcp")
 }

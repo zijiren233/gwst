@@ -87,7 +87,7 @@ func startServer(config EndpointConfig) {
 		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
 	}
 
-	wss := ws.NewWsServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
+	wss := ws.NewServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
 	err := wss.Serve()
 	if err != nil {
 		fmt.Printf("Error starting server on %s: %v\n", config.ListenAddr, err)
@@ -102,8 +102,8 @@ func startClient(config EndpointConfig) {
 		opts = append(opts, ws.WithDialTLS(config.ServerName, config.Insecure))
 	}
 
-	wsDialer := ws.NewWsDialer(config.TargetAddr, config.Path, opts...)
-	wsf := ws.NewWsForwarder(config.ListenAddr, wsDialer)
+	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
+	wsf := ws.NewForwarder(config.ListenAddr, wsDialer)
 	err := wsf.Serve()
 	if err != nil {
 		fmt.Printf("Error starting client on %s: %v\n", config.ListenAddr, err)

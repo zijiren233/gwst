@@ -10,7 +10,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-type WsServer struct {
+type Server struct {
 	listenAddr     string
 	targetAddr     string
 	allowedTargets map[string]struct{}
@@ -24,10 +24,10 @@ type WsServer struct {
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
-type WsServerOption func(*WsServer)
+type WsServerOption func(*Server)
 
 func WithTLS(certFile, keyFile, serverName string) WsServerOption {
-	return func(ps *WsServer) {
+	return func(ps *Server) {
 		ps.tls = true
 		ps.certFile = certFile
 		ps.keyFile = keyFile
@@ -36,7 +36,7 @@ func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 }
 
 func WithAllowedTargets(allowedTargets []string) WsServerOption {
-	return func(ps *WsServer) {
+	return func(ps *Server) {
 		if len(allowedTargets) == 0 {
 			return
 		}
@@ -48,14 +48,14 @@ func WithAllowedTargets(allowedTargets []string) WsServerOption {
 }
 
 func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) WsServerOption {
-	return func(ps *WsServer) {
+	return func(ps *Server) {
 		ps.tls = true
 		ps.GetCertificate = getCertificate
 	}
 }
 
-func NewWsServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *WsServer {
-	ps := &WsServer{
+func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Server {
+	ps := &Server{
 		listenAddr:  listenAddr,
 		targetAddr:  targetAddr,
 		stopCleanup: make(chan struct{}),
@@ -67,7 +67,7 @@ func NewWsServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *W
 	return ps
 }
 
-func (ps *WsServer) Serve(opts ...selfSignedCertOption) error {
+func (ps *Server) Serve(opts ...selfSignedCertOption) error {
 	mux := http.NewServeMux()
 	mux.Handle(ps.path, websocket.Handler(ps.handleWebSocket))
 	ps.server = &http.Server{Addr: ps.listenAddr, Handler: mux}
@@ -91,7 +91,7 @@ func (ps *WsServer) Serve(opts ...selfSignedCertOption) error {
 	return ps.server.ListenAndServe()
 }
 
-func (ps *WsServer) Close() error {
+func (ps *Server) Close() error {
 	if ps.server != nil {
 		close(ps.stopCleanup)
 		return ps.server.Close()
@@ -99,7 +99,7 @@ func (ps *WsServer) Close() error {
 	return fmt.Errorf("server not started")
 }
 
-func (ps *WsServer) handleWebSocket(ws *websocket.Conn) {
+func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	defer ws.Close()
 
 	ws.PayloadType = websocket.BinaryFrame
@@ -114,7 +114,7 @@ func (ps *WsServer) handleWebSocket(ws *websocket.Conn) {
 	ps.handle(ws, protocol, target)
 }
 
-func (ps *WsServer) getProtocol(requestProtocol string) string {
+func (ps *Server) getProtocol(requestProtocol string) string {
 	switch requestProtocol {
 	case "udp":
 		return "udp"
@@ -123,7 +123,7 @@ func (ps *WsServer) getProtocol(requestProtocol string) string {
 	}
 }
 
-func (ps *WsServer) getTarget(requestTarget string) (string, error) {
+func (ps *Server) getTarget(requestTarget string) (string, error) {
 	if requestTarget == "" || requestTarget == ps.targetAddr || len(ps.allowedTargets) == 0 {
 		return ps.targetAddr, nil
 	}
@@ -135,7 +135,7 @@ func (ps *WsServer) getTarget(requestTarget string) (string, error) {
 	return requestTarget, nil
 }
 
-func (ps *WsServer) handle(ws *websocket.Conn, network string, target string) {
+func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 	if target == "" {
 		return
 	}
