@@ -76,16 +76,17 @@ func (u *udpConnInfo) SetLastRec(t time.Time) {
 }
 
 type Forwarder struct {
-	listenAddr    string
-	wsDialer      *Dialer
-	udpConns      rwmap.RWMap[string, *udpConnInfo]
-	tcpListener   net.Listener
-	udpConn       *net.UDPConn
-	cleanupTicker *time.Ticker
-	onListened    chan struct{}
-	done          chan struct{}
-	disableTCP    bool
-	disableUDP    bool
+	listenAddr        string
+	wsDialer          *Dialer
+	udpConns          rwmap.RWMap[string, *udpConnInfo]
+	tcpListener       net.Listener
+	udpConn           *net.UDPConn
+	cleanupTicker     *time.Ticker
+	onListened        chan struct{}
+	onListenCloseOnce sync.Once
+	done              chan struct{}
+	disableTCP        bool
+	disableUDP        bool
 }
 
 type ForwarderOption func(*Forwarder)
@@ -137,6 +138,12 @@ func (wf *Forwarder) cleanupIdleConnections() {
 	}
 }
 
+func (wf *Forwarder) closeOnListened() {
+	wf.onListenCloseOnce.Do(func() {
+		close(wf.onListened)
+	})
+}
+
 func (wf *Forwarder) OnListened() <-chan struct{} {
 	return wf.onListened
 }
@@ -173,7 +180,7 @@ func (wf *Forwarder) Serve() error {
 		go wf.handleUDP()
 	}
 
-	close(wf.onListened)
+	wf.closeOnListened()
 
 	if !wf.disableTCP {
 		for {
@@ -195,6 +202,7 @@ func (wf *Forwarder) Serve() error {
 }
 
 func (wf *Forwarder) Close() error {
+	wf.closeOnListened()
 	close(wf.done)
 	var errs []error
 	if wf.tcpListener != nil {
