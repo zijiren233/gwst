@@ -60,26 +60,28 @@ func (u *udpConnInfo) Read(b []byte) (int, error) {
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
 	u.lock.Lock()
-	defer u.lock.Unlock()
 	n, err := u.Conn.Write(b)
 	u.lastRec = time.Now()
+	u.lock.Unlock()
 	return n, err
 }
 
 func (u *udpConnInfo) GetLastRec() time.Time {
 	u.lock.RLock()
-	defer u.lock.RUnlock()
-	return u.lastRec
+	t := u.lastRec
+	u.lock.RUnlock()
+	return t
 }
 
 func (u *udpConnInfo) SetLastRec(t time.Time) {
 	u.lock.Lock()
-	defer u.lock.Unlock()
 	u.lastRec = t
+	u.lock.Unlock()
 }
 
 const (
-	DefaultUDPPoolSize = 512
+	DefaultUDPPoolSize   = 512
+	DefaultUDPBufferSize = 8192
 )
 
 type Forwarder struct {
@@ -96,6 +98,9 @@ type Forwarder struct {
 	disableUDP        bool
 	udpPool           *ants.Pool
 	udpPoolSize       int
+	udpPoolPreAlloc   bool
+	udpBufferSize     int
+	bufferPool        sync.Pool
 }
 
 type ForwarderOption func(*Forwarder)
@@ -124,6 +129,18 @@ func WithUDPPoolSize(size int) ForwarderOption {
 	}
 }
 
+func WithUDPPoolPreAlloc(preAlloc bool) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpPoolPreAlloc = preAlloc
+	}
+}
+
+func WithUDPBufferSize(size int) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpBufferSize = size
+	}
+}
+
 func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) *Forwarder {
 	wf := &Forwarder{
 		listenAddr: listenAddr,
@@ -134,7 +151,24 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	for _, opt := range opts {
 		opt(wf)
 	}
+	if wf.udpBufferSize == 0 {
+		wf.udpBufferSize = DefaultUDPBufferSize
+	}
+	wf.bufferPool = sync.Pool{
+		New: func() interface{} {
+			buffer := make([]byte, wf.udpBufferSize)
+			return &buffer
+		},
+	}
 	return wf
+}
+
+func (wf *Forwarder) getBuffer() *[]byte {
+	return wf.bufferPool.Get().(*[]byte)
+}
+
+func (wf *Forwarder) putBuffer(buffer *[]byte) {
+	wf.bufferPool.Put(buffer)
 }
 
 func (wf *Forwarder) cleanupIdleConnections() {
@@ -204,7 +238,7 @@ func (wf *Forwarder) Serve() error {
 			}
 			wf.udpPool, err = ants.NewPool(
 				wf.udpPoolSize,
-				ants.WithPreAlloc(false),
+				ants.WithPreAlloc(wf.udpPoolPreAlloc),
 				ants.WithNonblocking(true),
 			)
 			if err != nil {
@@ -272,50 +306,56 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 	}
 	defer wsConn.Close()
 
-	go io.Copy(wsConn, conn)
-	io.Copy(conn, wsConn)
+	go func() {
+		_, _ = io.Copy(wsConn, conn)
+	}()
+	_, _ = io.Copy(conn, wsConn)
 }
 
 func (wf *Forwarder) handleUDP() {
-	buffer := make([]byte, 65507)
 	for {
 		select {
 		case <-wf.done:
 			return
 		default:
-			n, remoteAddr, err := wf.udpConn.ReadFromUDP(buffer)
-			if err != nil {
-				color.Red("Failed to read from UDP: %v", err)
-				continue
-			}
+			wf.processUDP()
+		}
+	}
+}
 
-			key := remoteAddr.String()
-			value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
-			if !loaded {
-				if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
-					color.Red("Failed to setup new UDP connection: %v", err)
-					wf.udpConns.CompareAndDelete(key, value)
-					continue
-				}
-			}
+func (wf *Forwarder) processUDP() {
+	buffer := wf.getBuffer()
+	defer wf.putBuffer(buffer)
 
-			data := make([]byte, n)
-			copy(data, buffer[:n])
-			err = wf.udpPool.Submit(func() {
-				_, err := value.Write(data)
-				if err != nil {
-					color.Red("Failed to write to UDP connection: %v", err)
-					wf.udpConns.CompareAndDelete(key, value)
-					value.Conn.Close()
-				}
-			})
-			if err != nil {
-				if err == ants.ErrPoolOverload {
-					color.Red("UDP pool is overloaded, dropping packet")
-				} else {
-					color.Red("Failed to submit UDP task: %v", err)
-				}
-			}
+	n, remoteAddr, err := wf.udpConn.ReadFromUDP(*buffer)
+	if err != nil {
+		color.Red("Failed to read from UDP: %v", err)
+		return
+	}
+
+	key := remoteAddr.String()
+	value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
+	if !loaded {
+		if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
+			color.Red("Failed to setup new UDP connection: %v", err)
+			wf.udpConns.CompareAndDelete(key, value)
+			return
+		}
+	}
+
+	err = wf.udpPool.Submit(func() {
+		_, err := value.Write((*buffer)[:n])
+		if err != nil {
+			color.Red("Failed to write to UDP connection: %v", err)
+			wf.udpConns.CompareAndDelete(key, value)
+			value.Conn.Close()
+		}
+	})
+	if err != nil {
+		if err == ants.ErrPoolOverload {
+			color.Red("UDP pool is overloaded, dropping packet")
+		} else {
+			color.Red("Failed to submit UDP task: %v", err)
 		}
 	}
 }
@@ -337,13 +377,15 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 		value.Conn.Close()
 	}()
 
-	buffer := make([]byte, 65507)
+	buffer := wf.getBuffer()
+	defer wf.putBuffer(buffer)
+
 	for {
 		select {
 		case <-wf.done:
 			return
 		default:
-			n, err := value.Read(buffer)
+			n, err := value.Read(*buffer)
 			if err != nil {
 				if err != io.EOF {
 					color.Red("Failed to read from WebSocket: %v", err)
@@ -351,7 +393,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 				return
 			}
 
-			_, err = wf.udpConn.WriteToUDP(buffer[:n], remoteAddr)
+			_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
 			if err != nil {
 				color.Red("Failed to write to UDP: %v", err)
 				return
