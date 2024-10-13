@@ -82,6 +82,7 @@ type Forwarder struct {
 	tcpListener   net.Listener
 	udpConn       *net.UDPConn
 	cleanupTicker *time.Ticker
+	onListened    chan struct{}
 	done          chan struct{}
 	disableTCP    bool
 	disableUDP    bool
@@ -105,6 +106,7 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	wf := &Forwarder{
 		listenAddr: listenAddr,
 		wsDialer:   wsDialer,
+		onListened: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -133,6 +135,10 @@ func (wf *Forwarder) cleanupIdleConnections() {
 			return
 		}
 	}
+}
+
+func (wf *Forwarder) OnListened() <-chan struct{} {
+	return wf.onListened
 }
 
 func (wf *Forwarder) Serve() error {
@@ -166,6 +172,8 @@ func (wf *Forwarder) Serve() error {
 
 		go wf.handleUDP()
 	}
+
+	close(wf.onListened)
 
 	if !wf.disableTCP {
 		for {

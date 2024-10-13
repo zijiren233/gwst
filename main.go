@@ -111,6 +111,6 @@ func startClient(config EndpointConfig) {
 	wsf := ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
 	err := wsf.Serve()
 	if err != nil {
-		color.Red("Error starting client on %s: %v", config.ListenAddr, err)
+		color.Red("Error serving client on %s: %v", config.ListenAddr, err)
 	}
 }
