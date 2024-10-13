@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/fatih/color"
 	"golang.org/x/net/websocket"
 )
 
@@ -107,9 +108,11 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	protocol := ps.getProtocol(ws.Request().Header.Get("X-Protocol"))
 	target, err := ps.getTarget(ws.Request().Header.Get("X-Target"))
 	if err != nil {
-		fmt.Printf("Error getting target: %v\n", err)
+		color.Red("Error getting target: %v\n", err)
 		return
 	}
+
+	color.Green("Received WebSocket connection: %v\nTarget: %s\nProtocol: %s\n", ws.RemoteAddr(), target, protocol)
 
 	ps.handle(ws, protocol, target)
 }
@@ -142,11 +145,19 @@ func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 
 	conn, err := net.Dial(network, target)
 	if err != nil {
-		fmt.Printf("Failed to connect to target: %v\n", err)
+		color.Red("Failed to connect to target: %v\n", err)
 		return
 	}
 	defer conn.Close()
 
-	go io.Copy(conn, ws)
-	io.Copy(ws, conn)
+	go func() {
+		_, err := io.Copy(conn, ws)
+		if err != nil && err != io.EOF {
+			color.Yellow("Failed to copy data to target: %v\n", err)
+		}
+	}()
+	_, err = io.Copy(ws, conn)
+	if err != nil && err != io.EOF {
+		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+	}
 }

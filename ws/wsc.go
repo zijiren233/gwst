@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
@@ -82,15 +83,33 @@ type Forwarder struct {
 	udpConn       *net.UDPConn
 	cleanupTicker *time.Ticker
 	done          chan struct{}
+	disableTCP    bool
+	disableUDP    bool
 }
 
-func NewForwarder(listenAddr string, wsDialer *Dialer) *Forwarder {
+type ForwarderOption func(*Forwarder)
+
+func WithDisableTCP() ForwarderOption {
+	return func(f *Forwarder) {
+		f.disableTCP = true
+	}
+}
+
+func WithDisableUDP() ForwarderOption {
+	return func(f *Forwarder) {
+		f.disableUDP = true
+	}
+}
+
+func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) *Forwarder {
 	wf := &Forwarder{
 		listenAddr: listenAddr,
 		wsDialer:   wsDialer,
 		done:       make(chan struct{}),
 	}
-	go wf.cleanupIdleConnections()
+	for _, opt := range opts {
+		opt(wf)
+	}
 	return wf
 }
 
@@ -118,37 +137,53 @@ func (wf *Forwarder) cleanupIdleConnections() {
 
 func (wf *Forwarder) Serve() error {
 	var err error
-	wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to start TCP listener: %w", err)
+
+	if wf.disableTCP && wf.disableUDP {
+		return fmt.Errorf("both TCP and UDP are disabled")
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", wf.listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to resolve UDP address: %w", err)
-	}
-
-	wf.udpConn, err = net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		wf.tcpListener.Close()
-		return fmt.Errorf("failed to start UDP listener: %w", err)
-	}
-
-	go wf.handleUDP()
-
-	for {
-		conn, err := wf.tcpListener.Accept()
+	if !wf.disableTCP {
+		wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
 		if err != nil {
-			select {
-			case <-wf.done:
-				return nil
-			default:
-				fmt.Printf("Failed to accept TCP connection: %v\n", err)
-				continue
-			}
+			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
-		go wf.handleTCP(conn)
+		go wf.cleanupIdleConnections()
 	}
+
+	if !wf.disableUDP {
+		udpAddr, err := net.ResolveUDPAddr("udp", wf.listenAddr)
+		if err != nil {
+			return fmt.Errorf("failed to resolve UDP address: %w", err)
+		}
+
+		wf.udpConn, err = net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			if wf.tcpListener != nil {
+				wf.tcpListener.Close()
+			}
+			return fmt.Errorf("failed to start UDP listener: %w", err)
+		}
+
+		go wf.handleUDP()
+	}
+
+	if !wf.disableTCP {
+		for {
+			conn, err := wf.tcpListener.Accept()
+			if err != nil {
+				select {
+				case <-wf.done:
+					return nil
+				default:
+					color.Red("Failed to accept TCP connection: %v", err)
+					continue
+				}
+			}
+			go wf.handleTCP(conn)
+		}
+	}
+	<-wf.done
+	return nil
 }
 
 func (wf *Forwarder) Close() error {
@@ -178,7 +213,7 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 
 	wsConn, err := wf.wsDialer.DialTCP()
 	if err != nil {
-		fmt.Printf("Failed to dial WebSocket: %v\n", err)
+		color.Red("Failed to dial WebSocket: %v", err)
 		return
 	}
 	defer wsConn.Close()
@@ -196,7 +231,7 @@ func (wf *Forwarder) handleUDP() {
 		default:
 			n, remoteAddr, err := wf.udpConn.ReadFromUDP(buffer)
 			if err != nil {
-				fmt.Printf("Failed to read from UDP: %v\n", err)
+				color.Red("Failed to read from UDP: %v", err)
 				continue
 			}
 
@@ -204,7 +239,7 @@ func (wf *Forwarder) handleUDP() {
 			value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
 			if !loaded {
 				if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
-					fmt.Printf("Failed to setup new UDP connection: %v\n", err)
+					color.Red("Failed to setup new UDP connection: %v", err)
 					wf.udpConns.CompareAndDelete(key, value)
 					continue
 				}
@@ -212,7 +247,7 @@ func (wf *Forwarder) handleUDP() {
 
 			_, err = value.Write(buffer[:n])
 			if err != nil {
-				fmt.Printf("Failed to write to UDP connection: %v\n", err)
+				color.Red("Failed to write to UDP connection: %v", err)
 				wf.udpConns.CompareAndDelete(key, value)
 				value.Conn.Close()
 			}
@@ -246,14 +281,14 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			n, err := value.Read(buffer)
 			if err != nil {
 				if err != io.EOF {
-					fmt.Printf("Failed to read from WebSocket: %v\n", err)
+					color.Red("Failed to read from WebSocket: %v", err)
 				}
 				return
 			}
 
 			_, err = wf.udpConn.WriteToUDP(buffer[:n], remoteAddr)
 			if err != nil {
-				fmt.Printf("Failed to write to UDP: %v\n", err)
+				color.Red("Failed to write to UDP: %v", err)
 				return
 			}
 		}

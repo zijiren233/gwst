@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"sync"
 
@@ -22,25 +21,27 @@ type EndpointConfig struct {
 	KeyFile        string   `yaml:"key_file"`
 	ServerName     string   `yaml:"server_name"`
 	Insecure       bool     `yaml:"insecure"`
+	DisableTCP     bool     `yaml:"disable_tcp"`
+	DisableUDP     bool     `yaml:"disable_udp"`
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Printf("Usage: gwst <config.yaml>\n")
+		color.Red("Usage: gwst <config.yaml>")
 		os.Exit(1)
 	}
 
 	configFile := os.Args[1]
 	yamlFile, err := os.ReadFile(configFile)
 	if err != nil {
-		fmt.Printf("Error reading YAML file: %v\n", err)
+		color.Red("Error reading YAML file: %v", err)
 		os.Exit(1)
 	}
 
 	var config []EndpointConfig
 	err = yaml.Unmarshal(yamlFile, &config)
 	if err != nil {
-		fmt.Printf("Error parsing YAML file: %v\n", err)
+		color.Red("Error parsing YAML file: %v", err)
 		os.Exit(1)
 	}
 
@@ -48,26 +49,24 @@ func main() {
 	for _, endpointConfig := range config {
 		wg.Add(1)
 		if endpointConfig.IsClient {
-			clientColor := color.New(color.FgHiCyan).SprintFunc()
 			if endpointConfig.Target == "" {
-				fmt.Printf("%s\n", clientColor(fmt.Sprintf("Starting client on %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr)))
+				color.Cyan("Starting client on %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr)
 			} else {
-				fmt.Printf("%s\n", clientColor(fmt.Sprintf("Starting client on %s -> %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr, endpointConfig.Target)))
+				color.Cyan("Starting client on %s -> %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr, endpointConfig.Target)
 			}
 			go func(cfg EndpointConfig) {
 				defer wg.Done()
 				startClient(cfg)
 			}(endpointConfig)
 		} else {
-			serverColor := color.New(color.FgHiGreen).SprintFunc()
 			if len(endpointConfig.AllowedTargets) != 0 {
 				if endpointConfig.TargetAddr == "" {
-					fmt.Printf("%s\n", serverColor(fmt.Sprintf("Starting server on %s -> %v", endpointConfig.ListenAddr, endpointConfig.AllowedTargets)))
+					color.Green("Starting server on %s -> %v", endpointConfig.ListenAddr, endpointConfig.AllowedTargets)
 				} else {
-					fmt.Printf("%s\n", serverColor(fmt.Sprintf("Starting server on %s -> %s |-> %v", endpointConfig.ListenAddr, endpointConfig.TargetAddr, endpointConfig.AllowedTargets)))
+					color.Green("Starting server on %s -> %s |-> %v", endpointConfig.ListenAddr, endpointConfig.TargetAddr, endpointConfig.AllowedTargets)
 				}
 			} else {
-				fmt.Printf("%s\n", serverColor(fmt.Sprintf("Starting server on %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr)))
+				color.Green("Starting server on %s -> %s", endpointConfig.ListenAddr, endpointConfig.TargetAddr)
 			}
 			go func(cfg EndpointConfig) {
 				defer wg.Done()
@@ -90,7 +89,7 @@ func startServer(config EndpointConfig) {
 	wss := ws.NewServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
 	err := wss.Serve()
 	if err != nil {
-		fmt.Printf("Error starting server on %s: %v\n", config.ListenAddr, err)
+		color.Red("Error starting server on %s: %v", config.ListenAddr, err)
 	}
 }
 
@@ -98,14 +97,20 @@ func startClient(config EndpointConfig) {
 	var opts []ws.ConnectOption = []ws.ConnectOption{
 		ws.WithTarget(config.Target),
 	}
+	var forwarderOpts []ws.ForwarderOption
 	if config.TLS {
 		opts = append(opts, ws.WithDialTLS(config.ServerName, config.Insecure))
 	}
-
+	if config.DisableTCP {
+		forwarderOpts = append(forwarderOpts, ws.WithDisableTCP())
+	}
+	if config.DisableUDP {
+		forwarderOpts = append(forwarderOpts, ws.WithDisableUDP())
+	}
 	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
-	wsf := ws.NewForwarder(config.ListenAddr, wsDialer)
+	wsf := ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
 	err := wsf.Serve()
 	if err != nil {
-		fmt.Printf("Error starting client on %s: %v\n", config.ListenAddr, err)
+		color.Red("Error starting client on %s: %v", config.ListenAddr, err)
 	}
 }
