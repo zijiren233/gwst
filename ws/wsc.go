@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/panjf2000/ants/v2"
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
@@ -58,8 +59,10 @@ func (u *udpConnInfo) Read(b []byte) (int, error) {
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
+	u.lock.Lock()
+	defer u.lock.Unlock()
 	n, err := u.Conn.Write(b)
-	u.SetLastRec(time.Now())
+	u.lastRec = time.Now()
 	return n, err
 }
 
@@ -75,6 +78,10 @@ func (u *udpConnInfo) SetLastRec(t time.Time) {
 	u.lastRec = t
 }
 
+const (
+	DefaultUDPPoolSize = 512
+)
+
 type Forwarder struct {
 	listenAddr        string
 	wsDialer          *Dialer
@@ -87,6 +94,8 @@ type Forwarder struct {
 	done              chan struct{}
 	disableTCP        bool
 	disableUDP        bool
+	udpPool           *ants.Pool
+	udpPoolSize       int
 }
 
 type ForwarderOption func(*Forwarder)
@@ -100,6 +109,18 @@ func WithDisableTCP() ForwarderOption {
 func WithDisableUDP() ForwarderOption {
 	return func(f *Forwarder) {
 		f.disableUDP = true
+	}
+}
+
+func WithUDPPool(pool *ants.Pool) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpPool = pool
+	}
+}
+
+func WithUDPPoolSize(size int) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpPoolSize = size
 	}
 }
 
@@ -177,6 +198,20 @@ func (wf *Forwarder) Serve() error {
 			return fmt.Errorf("failed to start UDP listener: %w", err)
 		}
 
+		if wf.udpPool == nil {
+			if wf.udpPoolSize == 0 {
+				wf.udpPoolSize = DefaultUDPPoolSize
+			}
+			wf.udpPool, err = ants.NewPool(
+				wf.udpPoolSize,
+				ants.WithPreAlloc(false),
+				ants.WithNonblocking(true),
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create UDP worker pool: %w", err)
+			}
+		}
+
 		go wf.handleUDP()
 	}
 
@@ -213,6 +248,9 @@ func (wf *Forwarder) Close() error {
 	}
 	if wf.cleanupTicker != nil {
 		wf.cleanupTicker.Stop()
+	}
+	if wf.udpPool != nil {
+		wf.udpPool.Release()
 	}
 	wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
 		value.Conn.Close()
@@ -261,11 +299,22 @@ func (wf *Forwarder) handleUDP() {
 				}
 			}
 
-			_, err = value.Write(buffer[:n])
+			data := make([]byte, n)
+			copy(data, buffer[:n])
+			err = wf.udpPool.Submit(func() {
+				_, err := value.Write(data)
+				if err != nil {
+					color.Red("Failed to write to UDP connection: %v", err)
+					wf.udpConns.CompareAndDelete(key, value)
+					value.Conn.Close()
+				}
+			})
 			if err != nil {
-				color.Red("Failed to write to UDP connection: %v", err)
-				wf.udpConns.CompareAndDelete(key, value)
-				value.Conn.Close()
+				if err == ants.ErrPoolOverload {
+					color.Red("UDP pool is overloaded, dropping packet")
+				} else {
+					color.Red("Failed to submit UDP task: %v", err)
+				}
 			}
 		}
 	}

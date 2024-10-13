@@ -4,6 +4,7 @@ go 1.22.0
 
 require (
 	github.com/fatih/color v1.17.0
+	github.com/panjf2000/ants/v2 v2.10.0
 	github.com/refraction-networking/utls v1.6.7
 	github.com/zijiren233/gencontainer v0.0.0-20241008162312-0d000427d9f5
 	golang.org/x/net v0.30.0
@@ -18,5 +19,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	golang.org/x/crypto v0.28.0 // indirect
 	golang.org/x/exp v0.0.0-20241009180824-f66d83c29e7c // indirect
+	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect
 )
