@@ -325,10 +325,10 @@ func (wf *Forwarder) handleUDP() {
 
 func (wf *Forwarder) processUDP() {
 	buffer := wf.getBuffer()
-	defer wf.putBuffer(buffer)
 
 	n, remoteAddr, err := wf.udpConn.ReadFromUDP(*buffer)
 	if err != nil {
+		wf.putBuffer(buffer)
 		color.Red("Failed to read from UDP: %v", err)
 		return
 	}
@@ -337,6 +337,7 @@ func (wf *Forwarder) processUDP() {
 	value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
 	if !loaded {
 		if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
+			wf.putBuffer(buffer)
 			color.Red("Failed to setup new UDP connection: %v", err)
 			wf.udpConns.CompareAndDelete(key, value)
 			return
@@ -344,6 +345,7 @@ func (wf *Forwarder) processUDP() {
 	}
 
 	err = wf.udpPool.Submit(func() {
+		defer wf.putBuffer(buffer)
 		_, err := value.Write((*buffer)[:n])
 		if err != nil {
 			color.Red("Failed to write to UDP connection: %v", err)
@@ -352,6 +354,7 @@ func (wf *Forwarder) processUDP() {
 		}
 	})
 	if err != nil {
+		wf.putBuffer(buffer)
 		if err == ants.ErrPoolOverload {
 			color.Red("UDP pool is overloaded, dropping packet")
 		} else {
@@ -372,13 +375,12 @@ func (wf *Forwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAddr
 }
 
 func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
+	buffer := wf.getBuffer()
 	defer func() {
+		wf.putBuffer(buffer)
 		wf.udpConns.CompareAndDelete(remoteAddr.String(), value)
 		value.Conn.Close()
 	}()
-
-	buffer := wf.getBuffer()
-	defer wf.putBuffer(buffer)
 
 	for {
 		select {

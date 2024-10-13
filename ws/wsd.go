@@ -218,10 +218,16 @@ func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
 		return nil, fmt.Errorf("failed to get utls spec: %w", err)
 	}
 
+	hasALPNExtension := false
 	for _, ext := range spec.Extensions {
 		if alpnExt, ok := ext.(*tls.ALPNExtension); ok {
 			alpnExt.AlpnProtocols = []string{"http/1.1"}
+			hasALPNExtension = true
 		}
+	}
+
+	if !hasALPNExtension {
+		spec.Extensions = append(spec.Extensions, &tls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}})
 	}
 
 	if err := client.ApplyPreset(&spec); err != nil {
