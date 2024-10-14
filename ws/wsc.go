@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -48,11 +49,10 @@ func (c *UDPConn) SetWriteDeadline(t time.Time) error {
 
 type udpConnInfo struct {
 	net.Conn
-	dialLock   sync.RWMutex
+	dialLock   sync.Mutex
 	dialErr    error
 	dialer     *Dialer
-	lock       sync.RWMutex
-	lastActive time.Time
+	lastActive atomic.Int64
 }
 
 func (u *udpConnInfo) Close() error {
@@ -105,16 +105,11 @@ func (u *udpConnInfo) Write(b []byte) (int, error) {
 }
 
 func (u *udpConnInfo) GetLastActive() time.Time {
-	u.lock.RLock()
-	t := u.lastActive
-	u.lock.RUnlock()
-	return t
+	return time.Unix(0, u.lastActive.Load())
 }
 
 func (u *udpConnInfo) SetLastActive(t time.Time) {
-	u.lock.Lock()
-	u.lastActive = t
-	u.lock.Unlock()
+	u.lastActive.Store(t.UnixNano())
 }
 
 const (
@@ -376,7 +371,7 @@ func (wf *Forwarder) processUDP() {
 		defer wf.putBuffer(buffer)
 
 		key := remoteAddr.String()
-		value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{dialer: wf.wsDialer, lastActive: time.Now()})
+		value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{dialer: wf.wsDialer})
 		if !loaded {
 			if _, err := value.Setup(); err != nil {
 				color.Red("Failed to setup new UDP connection: %v", err)
