@@ -26,7 +26,7 @@ type Server struct {
 	keyFile        string
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	bufferSize     int
-	bufferPool     sync.Pool
+	bufferPool     *sync.Pool
 }
 
 type WsServerOption func(*Server)
@@ -84,11 +84,15 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 	if ps.bufferSize == 0 {
 		ps.bufferSize = DefaultBufferSize
 	}
-	ps.bufferPool = sync.Pool{
-		New: func() interface{} {
-			buffer := make([]byte, ps.bufferSize)
-			return &buffer
-		},
+	if ps.bufferSize == DefaultBufferSize {
+		ps.bufferPool = &sharedBufferPool
+	} else {
+		ps.bufferPool = &sync.Pool{
+			New: func() interface{} {
+				buffer := make([]byte, ps.bufferSize)
+				return &buffer
+			},
+		}
 	}
 	return ps
 }

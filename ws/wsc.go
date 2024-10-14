@@ -13,6 +13,18 @@ import (
 	"github.com/zijiren233/gencontainer/rwmap"
 )
 
+const (
+	DefaultUDPPoolSize = 512
+	DefaultBufferSize  = 16 * 1024
+)
+
+var sharedBufferPool = sync.Pool{
+	New: func() interface{} {
+		buffer := make([]byte, DefaultBufferSize)
+		return &buffer
+	},
+}
+
 type UDPConn struct {
 	*net.UDPConn
 	readDeadline  time.Time
@@ -53,29 +65,25 @@ type udpConnInfo struct {
 	dialErr    error
 	dialer     *Dialer
 	lastActive atomic.Int64
-	closed     atomic.Bool
+	closed     bool
 }
 
 func (u *udpConnInfo) Close() error {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
 	if u.Conn != nil {
-		u.closed.Store(true)
+		u.closed = true
 		return u.Conn.Close()
 	}
 	return u.dialErr
 }
 
-func (u *udpConnInfo) Closed() bool {
-	return u.closed.Load()
-}
-
 func (u *udpConnInfo) Setup() (net.Conn, error) {
-	if u.Closed() {
-		return nil, net.ErrClosed
-	}
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+	if u.closed {
+		return nil, net.ErrClosed
+	}
 	if u.dialErr != nil {
 		return nil, u.dialErr
 	}
@@ -92,9 +100,6 @@ func (u *udpConnInfo) Setup() (net.Conn, error) {
 }
 
 func (u *udpConnInfo) Read(b []byte) (int, error) {
-	if u.Closed() {
-		return 0, net.ErrClosed
-	}
 	conn, err := u.Setup()
 	if err != nil {
 		return 0, err
@@ -106,9 +111,6 @@ func (u *udpConnInfo) Read(b []byte) (int, error) {
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
-	if u.Closed() {
-		return 0, net.ErrClosed
-	}
 	conn, err := u.Setup()
 	if err != nil {
 		return 0, err
@@ -127,11 +129,6 @@ func (u *udpConnInfo) SetLastActive(t time.Time) {
 	u.lastActive.Store(t.UnixNano())
 }
 
-const (
-	DefaultUDPPoolSize = 512
-	DefaultBufferSize  = 16 * 1024
-)
-
 type Forwarder struct {
 	listenAddr        string
 	wsDialer          *Dialer
@@ -148,7 +145,7 @@ type Forwarder struct {
 	udpPoolSize       int
 	udpPoolPreAlloc   bool
 	bufferSize        int
-	bufferPool        sync.Pool
+	bufferPool        *sync.Pool
 }
 
 type ForwarderOption func(*Forwarder)
@@ -202,11 +199,15 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	if wf.bufferSize == 0 {
 		wf.bufferSize = DefaultBufferSize
 	}
-	wf.bufferPool = sync.Pool{
-		New: func() interface{} {
-			buffer := make([]byte, wf.bufferSize)
-			return &buffer
-		},
+	if wf.bufferSize == DefaultBufferSize {
+		wf.bufferPool = &sharedBufferPool
+	} else {
+		wf.bufferPool = &sync.Pool{
+			New: func() interface{} {
+				buffer := make([]byte, wf.bufferSize)
+				return &buffer
+			},
+		}
 	}
 	return wf
 }
