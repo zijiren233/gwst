@@ -25,6 +25,18 @@ var sharedBufferPool = sync.Pool{
 	},
 }
 
+func newBufferPool(size int) *sync.Pool {
+	if size == DefaultBufferSize || size <= 0 {
+		return &sharedBufferPool
+	}
+	return &sync.Pool{
+		New: func() interface{} {
+			buffer := make([]byte, size)
+			return &buffer
+		},
+	}
+}
+
 type UDPConn struct {
 	*net.UDPConn
 	readDeadline  time.Time
@@ -71,11 +83,11 @@ type udpConnInfo struct {
 func (u *udpConnInfo) Close() error {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+	u.closed = true
 	if u.Conn != nil {
-		u.closed = true
 		return u.Conn.Close()
 	}
-	return u.dialErr
+	return nil
 }
 
 func (u *udpConnInfo) Setup() (net.Conn, error) {
@@ -199,16 +211,7 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	if wf.bufferSize == 0 {
 		wf.bufferSize = DefaultBufferSize
 	}
-	if wf.bufferSize == DefaultBufferSize {
-		wf.bufferPool = &sharedBufferPool
-	} else {
-		wf.bufferPool = &sync.Pool{
-			New: func() interface{} {
-				buffer := make([]byte, wf.bufferSize)
-				return &buffer
-			},
-		}
-	}
+	wf.bufferPool = newBufferPool(wf.bufferSize)
 	return wf
 }
 

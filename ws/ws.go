@@ -84,16 +84,7 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 	if ps.bufferSize == 0 {
 		ps.bufferSize = DefaultBufferSize
 	}
-	if ps.bufferSize == DefaultBufferSize {
-		ps.bufferPool = &sharedBufferPool
-	} else {
-		ps.bufferPool = &sync.Pool{
-			New: func() interface{} {
-				buffer := make([]byte, ps.bufferSize)
-				return &buffer
-			},
-		}
-	}
+	ps.bufferPool = newBufferPool(ps.bufferSize)
 	return ps
 }
 
