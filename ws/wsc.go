@@ -53,18 +53,27 @@ type udpConnInfo struct {
 	dialErr    error
 	dialer     *Dialer
 	lastActive atomic.Int64
+	closed     atomic.Bool
 }
 
 func (u *udpConnInfo) Close() error {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
 	if u.Conn != nil {
+		u.closed.Store(true)
 		return u.Conn.Close()
 	}
 	return u.dialErr
 }
 
+func (u *udpConnInfo) Closed() bool {
+	return u.closed.Load()
+}
+
 func (u *udpConnInfo) Setup() (net.Conn, error) {
+	if u.Closed() {
+		return nil, net.ErrClosed
+	}
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
 	if u.dialErr != nil {
@@ -83,6 +92,9 @@ func (u *udpConnInfo) Setup() (net.Conn, error) {
 }
 
 func (u *udpConnInfo) Read(b []byte) (int, error) {
+	if u.Closed() {
+		return 0, net.ErrClosed
+	}
 	conn, err := u.Setup()
 	if err != nil {
 		return 0, err
@@ -94,6 +106,9 @@ func (u *udpConnInfo) Read(b []byte) (int, error) {
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
+	if u.Closed() {
+		return 0, net.ErrClosed
+	}
 	conn, err := u.Setup()
 	if err != nil {
 		return 0, err
@@ -113,8 +128,8 @@ func (u *udpConnInfo) SetLastActive(t time.Time) {
 }
 
 const (
-	DefaultUDPPoolSize   = 512
-	DefaultUDPBufferSize = 8192
+	DefaultUDPPoolSize = 512
+	DefaultBufferSize  = 16 * 1024
 )
 
 type Forwarder struct {
@@ -132,7 +147,7 @@ type Forwarder struct {
 	udpPool           *ants.Pool
 	udpPoolSize       int
 	udpPoolPreAlloc   bool
-	udpBufferSize     int
+	bufferSize        int
 	bufferPool        sync.Pool
 }
 
@@ -168,9 +183,9 @@ func WithUDPPoolPreAlloc(preAlloc bool) ForwarderOption {
 	}
 }
 
-func WithUDPBufferSize(size int) ForwarderOption {
+func WithBufferSize(size int) ForwarderOption {
 	return func(f *Forwarder) {
-		f.udpBufferSize = size
+		f.bufferSize = size
 	}
 }
 
@@ -184,12 +199,12 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	for _, opt := range opts {
 		opt(wf)
 	}
-	if wf.udpBufferSize == 0 {
-		wf.udpBufferSize = DefaultUDPBufferSize
+	if wf.bufferSize == 0 {
+		wf.bufferSize = DefaultBufferSize
 	}
 	wf.bufferPool = sync.Pool{
 		New: func() interface{} {
-			buffer := make([]byte, wf.udpBufferSize)
+			buffer := make([]byte, wf.bufferSize)
 			return &buffer
 		},
 	}
@@ -341,9 +356,13 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 	defer wsConn.Close()
 
 	go func() {
-		_, _ = io.Copy(wsConn, conn)
+		buffer := wf.getBuffer()
+		defer wf.putBuffer(buffer)
+		_, _ = io.CopyBuffer(wsConn, conn, *buffer)
 	}()
-	_, _ = io.Copy(conn, wsConn)
+	buffer := wf.getBuffer()
+	defer wf.putBuffer(buffer)
+	_, _ = io.CopyBuffer(conn, wsConn, *buffer)
 }
 
 func (wf *Forwarder) handleUDP() {
@@ -374,7 +393,7 @@ func (wf *Forwarder) processUDP() {
 		value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{dialer: wf.wsDialer})
 		if !loaded {
 			if _, err := value.Setup(); err != nil {
-				color.Red("Failed to setup new UDP connection: %v", err)
+				color.Red("Failed to setup new UDP in websocket connection: %v", err)
 				wf.udpConns.CompareAndDelete(key, value)
 				return
 			}
@@ -383,9 +402,14 @@ func (wf *Forwarder) processUDP() {
 
 		_, err := value.Write((*buffer)[:n])
 		if err != nil {
-			color.Red("Failed to write to UDP connection: %v", err)
-			wf.udpConns.CompareAndDelete(key, value)
-			value.Close()
+			if err == net.ErrClosed {
+				wf.udpConns.CompareAndDelete(key, value)
+				return
+			}
+			color.Red("Failed to write to UDP in websocket connection: %v", err)
+			if wf.udpConns.CompareAndDelete(key, value) {
+				value.Close()
+			}
 		}
 	})
 	if err != nil {
@@ -402,8 +426,9 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 	buffer := wf.getBuffer()
 	defer func() {
 		wf.putBuffer(buffer)
-		wf.udpConns.CompareAndDelete(remoteAddr.String(), value)
-		value.Close()
+		if wf.udpConns.CompareAndDelete(remoteAddr.String(), value) {
+			value.Close()
+		}
 	}()
 
 	for {
@@ -413,6 +438,9 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 		default:
 			n, err := value.Read(*buffer)
 			if err != nil {
+				if err == net.ErrClosed {
+					return
+				}
 				if err != io.EOF {
 					color.Red("Failed to read from WebSocket: %v", err)
 				}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"github.com/fatih/color"
@@ -9,7 +10,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type EndpointConfig struct {
+func init() {
+	debug.SetGCPercent(10)
+}
+
+type Endpoint struct {
 	IsClient       bool              `yaml:"is_client"`
 	ListenAddr     string            `yaml:"listen_addr"`
 	TargetAddr     string            `yaml:"target_addr"`
@@ -40,29 +45,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	var config []EndpointConfig
-	err = yaml.Unmarshal(yamlFile, &config)
+	var endpoints []Endpoint
+	err = yaml.Unmarshal(yamlFile, &endpoints)
 	if err != nil {
 		color.Red("Error parsing YAML file: %v", err)
 		os.Exit(1)
 	}
 
 	var wg sync.WaitGroup
-	for _, endpointConfig := range config {
+	for _, endpoint := range endpoints {
 		wg.Add(1)
-		if endpointConfig.IsClient {
-			printClientInfo(endpointConfig)
+		if endpoint.IsClient {
+			printClientInfo(endpoint)
 		} else {
-			printServerInfo(endpointConfig)
+			printServerInfo(endpoint)
 		}
-		go func(cfg EndpointConfig) {
+		go func(cfg Endpoint) {
 			defer wg.Done()
 			if cfg.IsClient {
 				startClient(cfg)
 			} else {
 				startServer(cfg)
 			}
-		}(endpointConfig)
+		}(endpoint)
 	}
 
 	color.Magenta("All endpoints started, press Ctrl+C to stop")
@@ -70,7 +75,7 @@ func main() {
 	wg.Wait()
 }
 
-func printClientInfo(config EndpointConfig) {
+func printClientInfo(config Endpoint) {
 	color.Cyan("----------------------------------------")
 	if config.Target == "" && config.NamedTarget == "" {
 		color.Cyan("Starting client on %s -> %s", config.ListenAddr, config.TargetAddr)
@@ -82,7 +87,7 @@ func printClientInfo(config EndpointConfig) {
 	color.Cyan("----------------------------------------")
 }
 
-func printServerInfo(config EndpointConfig) {
+func printServerInfo(config Endpoint) {
 	color.Green("----------------------------------------")
 	if len(config.AllowedTargets) != 0 || len(config.NamedTargets) != 0 {
 		if config.TargetAddr == "" {
@@ -114,7 +119,7 @@ func printServerInfo(config EndpointConfig) {
 	color.Green("----------------------------------------")
 }
 
-func startServer(config EndpointConfig) {
+func startServer(config Endpoint) {
 	var opts []ws.WsServerOption = []ws.WsServerOption{
 		ws.WithAllowedTargets(config.AllowedTargets),
 		ws.WithNamedTargets(config.NamedTargets),
@@ -130,7 +135,7 @@ func startServer(config EndpointConfig) {
 	}
 }
 
-func startClient(config EndpointConfig) {
+func startClient(config Endpoint) {
 	var opts []ws.ConnectOption = []ws.ConnectOption{
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
