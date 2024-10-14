@@ -48,34 +48,72 @@ func (c *UDPConn) SetWriteDeadline(t time.Time) error {
 
 type udpConnInfo struct {
 	net.Conn
-	lock    sync.RWMutex
-	lastRec time.Time
+	dialLock   sync.RWMutex
+	dialErr    error
+	dialer     *Dialer
+	lock       sync.RWMutex
+	lastActive time.Time
+}
+
+func (u *udpConnInfo) Close() error {
+	u.dialLock.Lock()
+	defer u.dialLock.Unlock()
+	if u.Conn != nil {
+		return u.Conn.Close()
+	}
+	return u.dialErr
+}
+
+func (u *udpConnInfo) Setup() (net.Conn, error) {
+	u.dialLock.Lock()
+	defer u.dialLock.Unlock()
+	if u.dialErr != nil {
+		return nil, u.dialErr
+	}
+	if u.Conn != nil {
+		return u.Conn, nil
+	}
+	var conn net.Conn
+	conn, u.dialErr = u.dialer.DialUDP()
+	if u.dialErr != nil {
+		return nil, u.dialErr
+	}
+	u.Conn = conn
+	return conn, nil
 }
 
 func (u *udpConnInfo) Read(b []byte) (int, error) {
-	n, err := u.Conn.Read(b)
-	u.SetLastRec(time.Now())
+	conn, err := u.Setup()
+	if err != nil {
+		return 0, err
+	}
+	u.SetLastActive(time.Now())
+	n, err := conn.Read(b)
+	u.SetLastActive(time.Now())
 	return n, err
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
-	u.lock.Lock()
-	n, err := u.Conn.Write(b)
-	u.lastRec = time.Now()
-	u.lock.Unlock()
+	conn, err := u.Setup()
+	if err != nil {
+		return 0, err
+	}
+	u.SetLastActive(time.Now())
+	n, err := conn.Write(b)
+	u.SetLastActive(time.Now())
 	return n, err
 }
 
-func (u *udpConnInfo) GetLastRec() time.Time {
+func (u *udpConnInfo) GetLastActive() time.Time {
 	u.lock.RLock()
-	t := u.lastRec
+	t := u.lastActive
 	u.lock.RUnlock()
 	return t
 }
 
-func (u *udpConnInfo) SetLastRec(t time.Time) {
+func (u *udpConnInfo) SetLastActive(t time.Time) {
 	u.lock.Lock()
-	u.lastRec = t
+	u.lastActive = t
 	u.lock.Unlock()
 }
 
@@ -180,10 +218,11 @@ func (wf *Forwarder) cleanupIdleConnections() {
 		case <-wf.cleanupTicker.C:
 			now := time.Now()
 			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-				if now.Sub(value.GetLastRec()) > 3*time.Minute {
-					if wf.udpConns.CompareAndDelete(key, value) {
-						value.Conn.Close()
-					}
+				if now.Sub(value.GetLastActive()) <= 3*time.Minute {
+					return true
+				}
+				if wf.udpConns.CompareAndDelete(key, value) {
+					value.Close()
 				}
 				return true
 			})
@@ -287,7 +326,7 @@ func (wf *Forwarder) Close() error {
 		wf.udpPool.Release()
 	}
 	wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-		value.Conn.Close()
+		value.Close()
 		return true
 	})
 	if len(errs) > 0 {
@@ -333,24 +372,25 @@ func (wf *Forwarder) processUDP() {
 		return
 	}
 
-	key := remoteAddr.String()
-	value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{Conn: nil, lastRec: time.Now()})
-	if !loaded {
-		if err := wf.setupNewUDPConn(value, remoteAddr); err != nil {
-			wf.putBuffer(buffer)
-			color.Red("Failed to setup new UDP connection: %v", err)
-			wf.udpConns.CompareAndDelete(key, value)
-			return
-		}
-	}
-
 	err = wf.udpPool.Submit(func() {
 		defer wf.putBuffer(buffer)
+
+		key := remoteAddr.String()
+		value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{dialer: wf.wsDialer, lastActive: time.Now()})
+		if !loaded {
+			if _, err := value.Setup(); err != nil {
+				color.Red("Failed to setup new UDP connection: %v", err)
+				wf.udpConns.CompareAndDelete(key, value)
+				return
+			}
+			go wf.handleUDPResponse(value, remoteAddr)
+		}
+
 		_, err := value.Write((*buffer)[:n])
 		if err != nil {
 			color.Red("Failed to write to UDP connection: %v", err)
 			wf.udpConns.CompareAndDelete(key, value)
-			value.Conn.Close()
+			value.Close()
 		}
 	})
 	if err != nil {
@@ -363,23 +403,12 @@ func (wf *Forwarder) processUDP() {
 	}
 }
 
-func (wf *Forwarder) setupNewUDPConn(value *udpConnInfo, remoteAddr *net.UDPAddr) error {
-	newConn, err := wf.wsDialer.DialUDP()
-	if err != nil {
-		return fmt.Errorf("failed to dial WebSocket for UDP: %w", err)
-	}
-
-	value.Conn = newConn
-	go wf.handleUDPResponse(value, remoteAddr)
-	return nil
-}
-
 func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
 	buffer := wf.getBuffer()
 	defer func() {
 		wf.putBuffer(buffer)
 		wf.udpConns.CompareAndDelete(remoteAddr.String(), value)
-		value.Conn.Close()
+		value.Close()
 	}()
 
 	for {
