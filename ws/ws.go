@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 
 	"github.com/fatih/color"
 	"golang.org/x/net/websocket"
@@ -24,6 +25,8 @@ type Server struct {
 	certFile       string
 	keyFile        string
 	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	bufferSize     int
+	bufferPool     sync.Pool
 }
 
 type WsServerOption func(*Server)
@@ -62,6 +65,12 @@ func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certific
 	}
 }
 
+func WithServerBufferSize(size int) WsServerOption {
+	return func(ps *Server) {
+		ps.bufferSize = size
+	}
+}
+
 func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Server {
 	ps := &Server{
 		listenAddr:  listenAddr,
@@ -72,7 +81,24 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 	for _, opt := range opts {
 		opt(ps)
 	}
+	if ps.bufferSize == 0 {
+		ps.bufferSize = DefaultBufferSize
+	}
+	ps.bufferPool = sync.Pool{
+		New: func() interface{} {
+			buffer := make([]byte, ps.bufferSize)
+			return &buffer
+		},
+	}
 	return ps
+}
+
+func (ps *Server) getBuffer() *[]byte {
+	return ps.bufferPool.Get().(*[]byte)
+}
+
+func (ps *Server) putBuffer(buffer *[]byte) {
+	ps.bufferPool.Put(buffer)
 }
 
 func (ps *Server) Serve(opts ...selfSignedCertOption) error {
@@ -166,12 +192,17 @@ func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 	defer conn.Close()
 
 	go func() {
-		_, err := io.Copy(conn, ws)
+		buffer := ps.getBuffer()
+		defer ps.putBuffer(buffer)
+		_, err := io.CopyBuffer(conn, ws, *buffer)
 		if err != nil && err != io.EOF {
 			color.Yellow("Failed to copy data to target: %v\n", err)
 		}
 	}()
-	_, err = io.Copy(ws, conn)
+
+	buffer := ps.getBuffer()
+	defer ps.putBuffer(buffer)
+	_, err = io.CopyBuffer(ws, conn, *buffer)
 	if err != nil && err != io.EOF {
 		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
 	}
