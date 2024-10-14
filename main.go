@@ -55,24 +55,32 @@ func main() {
 	var wg sync.WaitGroup
 	for _, endpoint := range endpoints {
 		wg.Add(1)
+		var s server
 		if endpoint.IsClient {
 			printClientInfo(endpoint)
+			s = newClient(endpoint)
 		} else {
 			printServerInfo(endpoint)
+			s = newServer(endpoint)
 		}
-		go func(cfg Endpoint) {
+		go func() {
 			defer wg.Done()
-			if cfg.IsClient {
-				startClient(cfg)
-			} else {
-				startServer(cfg)
+			err := s.Serve()
+			if err != nil {
+				color.Red("Error serving %s: %v", s, err)
 			}
-		}(endpoint)
+		}()
+		<-s.OnListened()
 	}
 
 	color.Magenta("All endpoints started, press Ctrl+C to stop")
 
 	wg.Wait()
+}
+
+type server interface {
+	Serve() error
+	OnListened() <-chan struct{}
 }
 
 func printClientInfo(config Endpoint) {
@@ -93,23 +101,23 @@ func printServerInfo(config Endpoint) {
 		if config.TargetAddr == "" {
 			color.Green("Starting server on %s", config.ListenAddr)
 			if len(config.AllowedTargets) != 0 {
-				color.Yellow("  Allowed targets: %v", config.AllowedTargets)
+				color.Yellow("\tAllowed targets: %v", config.AllowedTargets)
 			}
 			if len(config.NamedTargets) != 0 {
-				color.Yellow("  Named targets:")
+				color.Yellow("\tNamed targets:")
 				for name, target := range config.NamedTargets {
-					color.White("    %s -> %s", name, target)
+					color.White("\t\t%s -> %s", name, target)
 				}
 			}
 		} else {
 			color.Green("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
 			if len(config.AllowedTargets) != 0 {
-				color.Yellow("  Additional allowed targets: %v", config.AllowedTargets)
+				color.Yellow("\tAdditional allowed targets: %v", config.AllowedTargets)
 			}
 			if len(config.NamedTargets) != 0 {
-				color.Yellow("  Named targets:")
+				color.Yellow("\tNamed targets:")
 				for name, target := range config.NamedTargets {
-					color.White("    %s -> %s", name, target)
+					color.White("\t\t%s -> %s", name, target)
 				}
 			}
 		}
@@ -119,7 +127,7 @@ func printServerInfo(config Endpoint) {
 	color.Green("----------------------------------------")
 }
 
-func startServer(config Endpoint) {
+func newServer(config Endpoint) *ws.Server {
 	var opts []ws.WsServerOption = []ws.WsServerOption{
 		ws.WithAllowedTargets(config.AllowedTargets),
 		ws.WithNamedTargets(config.NamedTargets),
@@ -128,14 +136,10 @@ func startServer(config Endpoint) {
 		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
 	}
 
-	wss := ws.NewServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
-	err := wss.Serve()
-	if err != nil {
-		color.Red("Error starting server on %s: %v", config.ListenAddr, err)
-	}
+	return ws.NewServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
 }
 
-func startClient(config Endpoint) {
+func newClient(config Endpoint) *ws.Forwarder {
 	var opts []ws.ConnectOption = []ws.ConnectOption{
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
@@ -151,9 +155,5 @@ func startClient(config Endpoint) {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDP())
 	}
 	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
-	wsf := ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
-	err := wsf.Serve()
-	if err != nil {
-		color.Red("Error serving client on %s: %v", config.ListenAddr, err)
-	}
+	return ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
 }

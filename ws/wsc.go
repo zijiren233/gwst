@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	DefaultUDPPoolSize = 512
-	DefaultBufferSize  = 16 * 1024
+	DefaultUDPPoolSize  = 512
+	DefaultBufferSize   = 16 * 1024
+	DefaultWriteTimeout = 15 * time.Second
 )
 
 var sharedBufferPool = sync.Pool{
@@ -128,6 +129,7 @@ func (u *udpConnInfo) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	u.SetLastActive(time.Now())
+	conn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
 	n, err := conn.Write(b)
 	u.SetLastActive(time.Now())
 	return n, err
@@ -147,7 +149,6 @@ type Forwarder struct {
 	udpConns          rwmap.RWMap[string, *udpConnInfo]
 	tcpListener       net.Listener
 	udpConn           *net.UDPConn
-	cleanupTicker     *time.Ticker
 	onListened        chan struct{}
 	onListenCloseOnce sync.Once
 	done              chan struct{}
@@ -224,12 +225,12 @@ func (wf *Forwarder) putBuffer(buffer *[]byte) {
 }
 
 func (wf *Forwarder) cleanupIdleConnections() {
-	wf.cleanupTicker = time.NewTicker(30 * time.Second)
-	defer wf.cleanupTicker.Stop()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case <-wf.cleanupTicker.C:
+		case <-ticker.C:
 			now := time.Now()
 			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
 				if now.Sub(value.GetLastActive()) <= 3*time.Minute {
@@ -333,14 +334,13 @@ func (wf *Forwarder) Close() error {
 	if wf.udpConn != nil {
 		errs = append(errs, wf.udpConn.Close())
 	}
-	if wf.cleanupTicker != nil {
-		wf.cleanupTicker.Stop()
-	}
 	if wf.udpPool != nil {
 		wf.udpPool.Release()
 	}
 	wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-		value.Close()
+		if wf.udpConns.CompareAndDelete(key, value) {
+			value.Close()
+		}
 		return true
 	})
 	if len(errs) > 0 {
@@ -362,11 +362,17 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 	go func() {
 		buffer := wf.getBuffer()
 		defer wf.putBuffer(buffer)
-		_, _ = io.CopyBuffer(wsConn, conn, *buffer)
+		_, err := CopyBufferWithWriteTimeout(wsConn, conn, *buffer, DefaultWriteTimeout)
+		if err != nil && err != net.ErrClosed {
+			color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+		}
 	}()
 	buffer := wf.getBuffer()
 	defer wf.putBuffer(buffer)
-	_, _ = io.CopyBuffer(conn, wsConn, *buffer)
+	_, err = CopyBufferWithWriteTimeout(conn, wsConn, *buffer, DefaultWriteTimeout)
+	if err != nil && err != net.ErrClosed {
+		color.Yellow("Failed to copy data to Target: %v\n", err)
+	}
 }
 
 func (wf *Forwarder) handleUDP() {
@@ -451,6 +457,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 				return
 			}
 
+			wf.udpConn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
 			_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
 			if err != nil {
 				color.Red("Failed to write to UDP: %v", err)
