@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 	"runtime/debug"
-	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/zijiren233/gwst/ws"
@@ -52,35 +52,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	var wg sync.WaitGroup
+	if len(endpoints) == 0 {
+		color.Red("No endpoints found in config file")
+		os.Exit(1)
+	}
+
 	for _, endpoint := range endpoints {
-		wg.Add(1)
-		var s server
-		if endpoint.IsClient {
-			printClientInfo(endpoint)
-			s = newClient(endpoint)
-		} else {
-			printServerInfo(endpoint)
-			s = newServer(endpoint)
-		}
-		go func() {
-			defer wg.Done()
-			err := s.Serve()
-			if err != nil {
-				color.Red("Error serving %s: %v", s, err)
-			}
-		}()
-		<-s.OnListened()
+		run(endpoint)
 	}
 
 	color.Magenta("All endpoints started, press Ctrl+C to stop")
+	select {}
+}
 
-	wg.Wait()
+func run(endpoint Endpoint) {
+	var s server
+	if endpoint.IsClient {
+		printClientInfo(endpoint)
+		s = newClient(endpoint)
+	} else {
+		printServerInfo(endpoint)
+		s = newServer(endpoint)
+	}
+	go func() {
+		defer func() {
+			if err := s.Close(); err != nil {
+				color.Red("Error closing %s %v", endpoint.ListenAddr, err)
+			}
+		}()
+		err := s.Serve()
+		if err != nil {
+			color.Red("Error serving %s %v", endpoint.ListenAddr, err)
+			color.Yellow("Restarting %s in 3 seconds...", endpoint.ListenAddr)
+			time.AfterFunc(time.Second*3, func() {
+				run(endpoint)
+			})
+		}
+	}()
+	<-s.OnListened()
 }
 
 type server interface {
 	Serve() error
 	OnListened() <-chan struct{}
+	Close() error
 }
 
 func printClientInfo(config Endpoint) {

@@ -280,9 +280,6 @@ func (wf *Forwarder) Serve() error {
 
 		wf.udpConn, err = net.ListenUDP("udp", udpAddr)
 		if err != nil {
-			if wf.tcpListener != nil {
-				wf.tcpListener.Close()
-			}
 			return fmt.Errorf("failed to start UDP listener: %w", err)
 		}
 
