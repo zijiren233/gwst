@@ -243,7 +243,7 @@ func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 		buffer := ps.getBuffer()
 		defer ps.putBuffer(buffer)
 		_, err = CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout)
-		if err != nil && err != net.ErrClosed {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			color.Yellow("Failed to copy data to WebSocket: %v\n", err)
 		}
 	}()
@@ -251,7 +251,7 @@ func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 	buffer := ps.getBuffer()
 	defer ps.putBuffer(buffer)
 	_, err = CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout)
-	if err != nil && err != net.ErrClosed {
+	if err != nil && !errors.Is(err, net.ErrClosed) {
 		color.Yellow("Failed to copy data to Target: %v\n", err)
 	}
 }

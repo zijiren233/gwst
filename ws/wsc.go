@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -360,14 +361,14 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 		buffer := wf.getBuffer()
 		defer wf.putBuffer(buffer)
 		_, err := CopyBufferWithWriteTimeout(wsConn, conn, *buffer, DefaultWriteTimeout)
-		if err != nil && err != net.ErrClosed {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			color.Yellow("Failed to copy data to WebSocket: %v\n", err)
 		}
 	}()
 	buffer := wf.getBuffer()
 	defer wf.putBuffer(buffer)
 	_, err = CopyBufferWithWriteTimeout(conn, wsConn, *buffer, DefaultWriteTimeout)
-	if err != nil && err != net.ErrClosed {
+	if err != nil && !errors.Is(err, net.ErrClosed) {
 		color.Yellow("Failed to copy data to Target: %v\n", err)
 	}
 }
@@ -409,7 +410,7 @@ func (wf *Forwarder) processUDP() {
 
 		_, err := value.Write((*buffer)[:n])
 		if err != nil {
-			if err == net.ErrClosed {
+			if errors.Is(err, net.ErrClosed) {
 				wf.udpConns.CompareAndDelete(key, value)
 				return
 			}
@@ -422,7 +423,7 @@ func (wf *Forwarder) processUDP() {
 	if err != nil {
 		wf.putBuffer(buffer)
 		if err == ants.ErrPoolOverload {
-			color.Red("UDP pool is overloaded, dropping packet")
+			color.Red("UDP pool is overloaded, dropping packet: %v", remoteAddr.String())
 		} else {
 			color.Red("Failed to submit UDP task: %v", err)
 		}
@@ -445,7 +446,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 		default:
 			n, err := value.Read(*buffer)
 			if err != nil {
-				if err == net.ErrClosed {
+				if errors.Is(err, net.ErrClosed) {
 					return
 				}
 				if err != io.EOF {
