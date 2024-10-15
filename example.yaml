@@ -12,6 +12,7 @@
 - is_client: true
   listen_addr: ":9090"
   target_addr: "example.com:8080"
+  host: "example.com"
   path: "/ws"
   tls: true
   server_name: "example.com"
@@ -27,4 +28,5 @@
 - is_client: true
   listen_addr: ":9091"
   target_addr: "example.org:8081"
+  host: "example.org"
   path: "/websocket"

@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -30,7 +31,10 @@ var defaultDialer = &net.Dialer{
 }
 
 type ConnectConfig struct {
-	TargetAddr  string
+	Addr        string
+	splitAddr   string
+	splitPort   string
+	Host        string
 	Path        string
 	Target      string
 	NamedTarget string
@@ -43,9 +47,15 @@ type ConnectConfig struct {
 
 type ConnectOption func(*ConnectConfig)
 
-func WithTargetAddr(targetAddr string) ConnectOption {
+func WithAddr(addr string) ConnectOption {
 	return func(c *ConnectConfig) {
-		c.TargetAddr = targetAddr
+		c.Addr = addr
+	}
+}
+
+func WithHost(host string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Host = host
 	}
 }
 
@@ -93,23 +103,40 @@ func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
 		opt(cfg)
 	}
 
+	return ConnectWithConfig(ctx, cfg)
+}
+
+func ConnectWithConfig(ctx context.Context, cfg *ConnectConfig) (net.Conn, error) {
+	if cfg == nil {
+		return nil, errors.New("config is nil")
+	}
 	if cfg.Dialer == nil {
 		cfg.Dialer = defaultDialer
 	}
 
-	addr, port, err := parseHostAndPort(cfg.TargetAddr, cfg.TLS)
+	addr, port, err := parseAddrAndPort(cfg.Addr, cfg.TLS)
 	if err != nil {
 		return nil, err
 	}
 
+	cfg.splitAddr = addr
+	cfg.splitPort = port
+
+	if cfg.Host == "" {
+		if cfg.ServerName != "" {
+			cfg.Host = cfg.ServerName
+		} else {
+			cfg.Host = cfg.splitAddr
+		}
+	}
+
+	if cfg.ServerName == "" {
+		cfg.ServerName = cfg.Host
+	}
+
 	cfg.Path = ensureLeadingSlash(cfg.Path)
 
-	var ws *websocket.Conn
-	if cfg.TLS {
-		ws, err = connectTLS(ctx, addr, port, cfg)
-	} else {
-		ws, err = connectNonTLS(ctx, addr, port, cfg)
-	}
+	ws, err := connect(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +145,12 @@ func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
 	return ws, nil
 }
 
-func parseHostAndPort(host string, tlsEnabled bool) (string, string, error) {
-	host = strings.TrimPrefix(strings.TrimPrefix(host, "ws://"), "wss://")
-	domain, port, err := net.SplitHostPort(host)
+func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
+	domain, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		if err.Error() == "missing port in address" {
 			port = defaultPort(tlsEnabled)
-			return host, port, nil
+			return addr, port, nil
 		}
 		return "", "", fmt.Errorf("failed to split host and port: %w", err)
 	}
@@ -145,45 +171,44 @@ func ensureLeadingSlash(path string) string {
 	return path
 }
 
-func connectTLS(ctx context.Context, addr, port string, cfg *ConnectConfig) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("wss", addr, port, cfg)
+func connect(ctx context.Context, cfg *ConnectConfig) (*websocket.Conn, error) {
+	ws_config, err := createWebsocketConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	if cfg.ServerName == "" {
-		cfg.ServerName = addr
-	}
-
-	config := &tls.Config{
-		InsecureSkipVerify: cfg.Insecure,
-		ServerName:         cfg.ServerName,
-	}
-
-	dialConn, err := dialWithTimeout(ctx, cfg.Dialer, addr, port)
+	dialConn, err := dialWithTimeout(ctx, cfg.Dialer, cfg.splitAddr, cfg.splitPort)
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := createTLSClient(dialConn, config)
-	if err != nil {
-		return nil, err
+	if cfg.TLS {
+		config := &tls.Config{
+			InsecureSkipVerify: cfg.Insecure,
+			ServerName:         cfg.ServerName,
+		}
+
+		tlsConn, err := createTLSClient(dialConn, config)
+		if err != nil {
+			dialConn.Close()
+			return nil, err
+		}
+		dialConn = tlsConn
 	}
 
-	return websocket.NewClient(ws_config, client)
+	return websocket.NewClient(ws_config, dialConn)
 }
 
-func connectNonTLS(ctx context.Context, addr, port string, cfg *ConnectConfig) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig("ws", addr, port, cfg)
-	if err != nil {
-		return nil, err
+func createWebsocketConfig(cfg *ConnectConfig) (*websocket.Config, error) {
+	var server, origin string
+	if cfg.TLS {
+		server = fmt.Sprintf("wss://%s%s", cfg.Host, cfg.Path)
+		origin = fmt.Sprintf("https://%s%s", cfg.Host, cfg.Path)
+	} else {
+		server = fmt.Sprintf("ws://%s%s", cfg.Host, cfg.Path)
+		origin = fmt.Sprintf("http://%s%s", cfg.Host, cfg.Path)
 	}
-	return ws_config.DialContext(ctx)
-}
-
-func createWebsocketConfig(scheme, addr, port string, cfg *ConnectConfig) (*websocket.Config, error) {
-	url := fmt.Sprintf("%s://%s:%s%s", scheme, addr, port, cfg.Path)
-	ws_config, err := websocket.NewConfig(url, url)
+	ws_config, err := websocket.NewConfig(server, origin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
@@ -244,8 +269,8 @@ type Dialer struct {
 func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
 	wc := &Dialer{
 		config: ConnectConfig{
-			TargetAddr: addr,
-			Path:       path,
+			Addr: addr,
+			Path: path,
 		},
 	}
 	for _, option := range options {
@@ -254,14 +279,14 @@ func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
 	return wc
 }
 
-func (wc *Dialer) Dial(network string) (net.Conn, error) {
-	return wc.DialContext(context.Background(), network)
-}
-
 func (wc *Dialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
 	cfg := wc.config
 	cfg.UDP = strings.HasPrefix(network, "udp")
-	return Connect(ctx, func(c *ConnectConfig) { *c = cfg })
+	return ConnectWithConfig(ctx, &cfg)
+}
+
+func (wc *Dialer) Dial(network string) (net.Conn, error) {
+	return wc.DialContext(context.Background(), network)
 }
 
 func (wc *Dialer) DialUDP() (net.Conn, error) {

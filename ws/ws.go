@@ -101,7 +101,12 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 	ps.bufferPool = newBufferPool(ps.bufferSize)
 	mux := http.NewServeMux()
 	mux.Handle(ps.path, websocket.Handler(ps.handleWebSocket))
-	ps.server = &http.Server{Addr: ps.listenAddr, Handler: mux}
+	ps.server = &http.Server{
+		Addr:              ps.listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: time.Second * 5,
+		MaxHeaderBytes:    16 * 1024,
+	}
 	return ps
 }
 
@@ -221,7 +226,7 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 		return
 	}
 
-	color.Green("Received WebSocket connection: %v\n\tTarget: %s\n\tProtocol: %s\n", ws.RemoteAddr(), target, protocol)
+	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tProtocol: %s\n", ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, protocol)
 
 	ps.handle(ws, protocol, target)
 }

@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	debug.SetGCPercent(10)
+	debug.SetGCPercent(20)
 }
 
 type Endpoint struct {
@@ -22,6 +22,7 @@ type Endpoint struct {
 	NamedTargets   map[string]string `yaml:"named_targets"`
 	Target         string            `yaml:"target"`
 	NamedTarget    string            `yaml:"named_target"`
+	Host           string            `yaml:"host"`
 	Path           string            `yaml:"path"`
 	TLS            bool              `yaml:"tls"`
 	CertFile       string            `yaml:"cert_file"`
@@ -155,6 +156,7 @@ func newServer(config Endpoint) *ws.Server {
 
 func newClient(config Endpoint) *ws.Forwarder {
 	var opts []ws.ConnectOption = []ws.ConnectOption{
+		ws.WithHost(config.Host),
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
 	}
