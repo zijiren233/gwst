@@ -196,7 +196,12 @@ func connect(ctx context.Context, cfg *ConnectConfig) (*websocket.Conn, error) {
 		dialConn = tlsConn
 	}
 
-	return websocket.NewClient(ws_config, dialConn)
+	ws, err := websocket.NewClient(ws_config, dialConn)
+	if err != nil {
+		dialConn.Close()
+		return nil, err
+	}
+	return ws, nil
 }
 
 func createWebsocketConfig(cfg *ConnectConfig) (*websocket.Config, error) {
