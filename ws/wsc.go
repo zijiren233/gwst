@@ -157,6 +157,7 @@ type Forwarder struct {
 	disableTCP        bool
 	disableUDP        bool
 	udpPool           *ants.Pool
+	useSharedUDPPool  bool
 	udpPoolSize       int
 	udpPoolPreAlloc   bool
 	bufferSize        int
@@ -180,6 +181,7 @@ func WithDisableUDP() ForwarderOption {
 func WithUDPPool(pool *ants.Pool) ForwarderOption {
 	return func(f *Forwarder) {
 		f.udpPool = pool
+		f.useSharedUDPPool = pool != nil
 	}
 }
 
@@ -226,7 +228,7 @@ func (wf *Forwarder) putBuffer(buffer *[]byte) {
 	wf.bufferPool.Put(buffer)
 }
 
-func (wf *Forwarder) cleanupIdleConnections() {
+func (wf *Forwarder) cleanupUDPIdleConnections() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -243,11 +245,7 @@ func (wf *Forwarder) cleanupIdleConnections() {
 				return true
 			})
 		case <-wf.shutdowned:
-			now := time.Now()
 			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-				if now.Sub(value.GetLastActive()) <= 3*time.Minute {
-					return true
-				}
 				if wf.udpConns.CompareAndDelete(key, value) {
 					value.Close()
 				}
@@ -294,40 +292,54 @@ func (wf *Forwarder) Serve() (err error) {
 	}
 
 	if !wf.disableTCP {
-		wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
+		ln, err := net.Listen("tcp", wf.listenAddr)
 		if err != nil {
 			wf.listenErr = fmt.Errorf("failed to start TCP listener: %w", err)
 			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
-		go wf.cleanupIdleConnections()
+		wf.tcpListener = ln
 	}
 
 	if !wf.disableUDP {
+		if !wf.useSharedUDPPool {
+			if wf.udpPoolSize == 0 {
+				wf.udpPoolSize = DefaultUDPPoolSize
+			}
+			udpPool, err := ants.NewPool(
+				wf.udpPoolSize,
+				ants.WithPreAlloc(wf.udpPoolPreAlloc),
+				ants.WithNonblocking(true),
+			)
+			if err != nil {
+				if wf.tcpListener != nil {
+					wf.tcpListener.Close()
+					wf.tcpListener = nil
+				}
+				wf.listenErr = fmt.Errorf("failed to create UDP worker pool: %w", err)
+				return fmt.Errorf("failed to create UDP worker pool: %w", err)
+			}
+			wf.udpPool = udpPool
+		}
+
 		var udpAddr *net.UDPAddr
 		udpAddr, err = net.ResolveUDPAddr("udp", wf.listenAddr)
 		if err != nil {
 			return fmt.Errorf("failed to resolve UDP address: %w", err)
 		}
 
-		wf.udpConn, err = net.ListenUDP("udp", udpAddr)
+		var udpConn *net.UDPConn
+		udpConn, err = net.ListenUDP("udp", udpAddr)
 		if err != nil {
+			if wf.tcpListener != nil {
+				wf.tcpListener.Close()
+				wf.tcpListener = nil
+			}
 			wf.listenErr = fmt.Errorf("failed to start UDP listener: %w", err)
 			return fmt.Errorf("failed to start UDP listener: %w", err)
 		}
+		wf.udpConn = udpConn
 
-		if wf.udpPool == nil {
-			if wf.udpPoolSize == 0 {
-				wf.udpPoolSize = DefaultUDPPoolSize
-			}
-			wf.udpPool, err = ants.NewPool(
-				wf.udpPoolSize,
-				ants.WithPreAlloc(wf.udpPoolPreAlloc),
-				ants.WithNonblocking(true),
-			)
-			if err != nil {
-				return fmt.Errorf("failed to create UDP worker pool: %w", err)
-			}
-		}
+		go wf.cleanupUDPIdleConnections()
 	}
 
 	wf.closeOnListened()
@@ -395,7 +407,7 @@ func (wf *Forwarder) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	if wf.udpPool != nil {
+	if !wf.useSharedUDPPool && wf.udpPool != nil {
 		wf.udpPool.Release()
 	}
 	if len(errs) > 0 {
