@@ -28,6 +28,7 @@ type Server struct {
 	keyFile               string
 	selfSignedCertOptions []selfSignedCertOption
 	onListened            chan struct{}
+	listenErr             error
 	onListenCloseOnce     sync.Once
 	GetCertificate        func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	bufferSize            int
@@ -120,7 +121,13 @@ func (ps *Server) OnListened() <-chan struct{} {
 	return ps.onListened
 }
 
+func (ps *Server) ListenErr() error {
+	return ps.listenErr
+}
+
 func (ps *Server) Serve() error {
+	defer ps.closeOnListened()
+
 	if ps.tls {
 		if ps.GetCertificate != nil {
 			ps.server.TLSConfig = &tls.Config{
@@ -149,6 +156,7 @@ func (ps *Server) listenAndServeTLS(certFile, keyFile string) error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		ps.listenErr = err
 		return err
 	}
 
@@ -166,6 +174,7 @@ func (ps *Server) listenAndServe() error {
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		ps.listenErr = err
 		return err
 	}
 

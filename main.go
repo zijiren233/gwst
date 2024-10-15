@@ -58,7 +58,12 @@ func main() {
 	}
 
 	for _, endpoint := range endpoints {
-		run(endpoint)
+		if endpoint.IsClient {
+			printClientInfo(endpoint)
+		} else {
+			printServerInfo(endpoint)
+		}
+		go run(endpoint)
 	}
 
 	color.Magenta("All endpoints started, press Ctrl+C to stop")
@@ -68,33 +73,27 @@ func main() {
 func run(endpoint Endpoint) {
 	var s server
 	if endpoint.IsClient {
-		printClientInfo(endpoint)
 		s = newClient(endpoint)
 	} else {
-		printServerInfo(endpoint)
 		s = newServer(endpoint)
 	}
-	go func() {
-		defer func() {
-			if err := s.Close(); err != nil {
-				color.Red("Error closing %s %v", endpoint.ListenAddr, err)
-			}
-		}()
-		err := s.Serve()
-		if err != nil {
-			color.Red("Error serving %s %v", endpoint.ListenAddr, err)
-			color.Yellow("Restarting %s in 3 seconds...", endpoint.ListenAddr)
-			time.AfterFunc(time.Second*3, func() {
-				run(endpoint)
-			})
+	defer func() {
+		if err := s.Close(); err != nil {
+			color.Red("Error closing %s %v", endpoint.ListenAddr, err)
 		}
 	}()
-	<-s.OnListened()
+	err := s.Serve()
+	if err != nil {
+		color.Red("Error serving %s %v", endpoint.ListenAddr, err)
+		color.Yellow("Restarting %s in 3 seconds...", endpoint.ListenAddr)
+		time.AfterFunc(time.Second*3, func() {
+			run(endpoint)
+		})
+	}
 }
 
 type server interface {
 	Serve() error
-	OnListened() <-chan struct{}
 	Close() error
 }
 

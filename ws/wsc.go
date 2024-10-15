@@ -153,6 +153,8 @@ type Forwarder struct {
 	onListened        chan struct{}
 	onListenCloseOnce sync.Once
 	done              chan struct{}
+	closeOnce         sync.Once
+	listenErr         error
 	disableTCP        bool
 	disableUDP        bool
 	udpPool           *ants.Pool
@@ -228,7 +230,6 @@ func (wf *Forwarder) putBuffer(buffer *[]byte) {
 func (wf *Forwarder) cleanupIdleConnections() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ticker.C:
@@ -258,8 +259,12 @@ func (wf *Forwarder) OnListened() <-chan struct{} {
 	return wf.onListened
 }
 
-func (wf *Forwarder) Serve() error {
-	var err error
+func (wf *Forwarder) ListenErr() error {
+	return wf.listenErr
+}
+
+func (wf *Forwarder) Serve() (err error) {
+	defer wf.closeOnListened()
 
 	if wf.disableTCP && wf.disableUDP {
 		return fmt.Errorf("both TCP and UDP are disabled")
@@ -268,19 +273,22 @@ func (wf *Forwarder) Serve() error {
 	if !wf.disableTCP {
 		wf.tcpListener, err = net.Listen("tcp", wf.listenAddr)
 		if err != nil {
+			wf.listenErr = fmt.Errorf("failed to start TCP listener: %w", err)
 			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
 		go wf.cleanupIdleConnections()
 	}
 
 	if !wf.disableUDP {
-		udpAddr, err := net.ResolveUDPAddr("udp", wf.listenAddr)
+		var udpAddr *net.UDPAddr
+		udpAddr, err = net.ResolveUDPAddr("udp", wf.listenAddr)
 		if err != nil {
 			return fmt.Errorf("failed to resolve UDP address: %w", err)
 		}
 
 		wf.udpConn, err = net.ListenUDP("udp", udpAddr)
 		if err != nil {
+			wf.listenErr = fmt.Errorf("failed to start UDP listener: %w", err)
 			return fmt.Errorf("failed to start UDP listener: %w", err)
 		}
 
@@ -297,40 +305,75 @@ func (wf *Forwarder) Serve() error {
 				return fmt.Errorf("failed to create UDP worker pool: %w", err)
 			}
 		}
-
-		go wf.handleUDP()
 	}
 
 	wf.closeOnListened()
 
-	if !wf.disableTCP {
+	if !wf.disableTCP && !wf.disableUDP {
+		go func() {
+			for {
+				err := wf.processUDP()
+				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
+					color.Red("Failed to process UDP: %v", err)
+				}
+			}
+		}()
 		for {
 			conn, err := wf.tcpListener.Accept()
 			if err != nil {
-				select {
-				case <-wf.done:
+				if errors.Is(err, net.ErrClosed) {
 					return nil
-				default:
-					color.Red("Failed to accept TCP connection: %v", err)
-					continue
 				}
+				color.Red("Failed to accept TCP connection: %v", err)
+				continue
 			}
 			go wf.handleTCP(conn)
 		}
+	} else if !wf.disableTCP {
+		for {
+			conn, err := wf.tcpListener.Accept()
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+				color.Red("Failed to accept TCP connection: %v", err)
+				continue
+			}
+			go wf.handleTCP(conn)
+		}
+	} else {
+		for {
+			err := wf.processUDP()
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+				color.Red("Failed to process UDP: %v", err)
+			}
+		}
 	}
-	<-wf.done
-	return nil
 }
 
 func (wf *Forwarder) Close() error {
 	wf.closeOnListened()
-	close(wf.done)
+	wf.closeOnce.Do(func() {
+		close(wf.done)
+	})
 	var errs []error
 	if wf.tcpListener != nil {
-		errs = append(errs, wf.tcpListener.Close())
+		err := wf.tcpListener.Close()
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if wf.udpConn != nil {
-		errs = append(errs, wf.udpConn.Close())
+		err := wf.udpConn.Close()
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if wf.udpPool != nil {
 		wf.udpPool.Release()
@@ -373,25 +416,13 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 	}
 }
 
-func (wf *Forwarder) handleUDP() {
-	for {
-		select {
-		case <-wf.done:
-			return
-		default:
-			wf.processUDP()
-		}
-	}
-}
-
-func (wf *Forwarder) processUDP() {
+func (wf *Forwarder) processUDP() error {
 	buffer := wf.getBuffer()
 
 	n, remoteAddr, err := wf.udpConn.ReadFromUDP(*buffer)
 	if err != nil {
 		wf.putBuffer(buffer)
-		color.Red("Failed to read from UDP: %v", err)
-		return
+		return fmt.Errorf("failed to read from UDP: %w", err)
 	}
 
 	err = wf.udpPool.Submit(func() {
@@ -428,6 +459,7 @@ func (wf *Forwarder) processUDP() {
 			color.Red("Failed to submit UDP task: %v", err)
 		}
 	}
+	return nil
 }
 
 func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
@@ -440,27 +472,25 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 	}()
 
 	for {
-		select {
-		case <-wf.done:
+		n, err := value.Read(*buffer)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if err != io.EOF {
+				color.Red("Failed to read from WebSocket: %v", err)
+			}
 			return
-		default:
-			n, err := value.Read(*buffer)
-			if err != nil {
-				if errors.Is(err, net.ErrClosed) {
-					return
-				}
-				if err != io.EOF {
-					color.Red("Failed to read from WebSocket: %v", err)
-				}
-				return
-			}
+		}
 
-			wf.udpConn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
-			_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
-			if err != nil {
-				color.Red("Failed to write to UDP: %v", err)
+		wf.udpConn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
+		_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+			color.Red("Failed to write to UDP: %v", err)
+			return
 		}
 	}
 }
