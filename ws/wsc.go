@@ -152,8 +152,7 @@ type Forwarder struct {
 	udpConn           *net.UDPConn
 	onListened        chan struct{}
 	onListenCloseOnce sync.Once
-	done              chan struct{}
-	closeOnce         sync.Once
+	shutdowned        chan struct{}
 	listenErr         error
 	disableTCP        bool
 	disableUDP        bool
@@ -207,7 +206,7 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 		listenAddr: listenAddr,
 		wsDialer:   wsDialer,
 		onListened: make(chan struct{}),
-		done:       make(chan struct{}),
+		shutdowned: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(wf)
@@ -243,7 +242,17 @@ func (wf *Forwarder) cleanupIdleConnections() {
 				}
 				return true
 			})
-		case <-wf.done:
+		case <-wf.shutdowned:
+			now := time.Now()
+			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
+				if now.Sub(value.GetLastActive()) <= 3*time.Minute {
+					return true
+				}
+				if wf.udpConns.CompareAndDelete(key, value) {
+					value.Close()
+				}
+				return true
+			})
 			return
 		}
 	}
@@ -263,8 +272,22 @@ func (wf *Forwarder) ListenErr() error {
 	return wf.listenErr
 }
 
+func (wf *Forwarder) Shutdowned() <-chan struct{} {
+	return wf.shutdowned
+}
+
+func (wf *Forwarder) ShutdownedBool() bool {
+	select {
+	case <-wf.shutdowned:
+		return true
+	default:
+		return false
+	}
+}
+
 func (wf *Forwarder) Serve() (err error) {
 	defer wf.closeOnListened()
+	defer close(wf.shutdowned)
 
 	if wf.disableTCP && wf.disableUDP {
 		return fmt.Errorf("both TCP and UDP are disabled")
@@ -359,9 +382,6 @@ func (wf *Forwarder) Serve() (err error) {
 
 func (wf *Forwarder) Close() error {
 	wf.closeOnListened()
-	wf.closeOnce.Do(func() {
-		close(wf.done)
-	})
 	var errs []error
 	if wf.tcpListener != nil {
 		err := wf.tcpListener.Close()
@@ -378,12 +398,6 @@ func (wf *Forwarder) Close() error {
 	if wf.udpPool != nil {
 		wf.udpPool.Release()
 	}
-	wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-		if wf.udpConns.CompareAndDelete(key, value) {
-			value.Close()
-		}
-		return true
-	})
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing WsForwarder: %v", errs)
 	}

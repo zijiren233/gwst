@@ -28,6 +28,7 @@ type Server struct {
 	keyFile               string
 	selfSignedCertOptions []selfSignedCertOption
 	onListened            chan struct{}
+	shutdowned            chan struct{}
 	listenErr             error
 	onListenCloseOnce     sync.Once
 	GetCertificate        func(*tls.ClientHelloInfo) (*tls.Certificate, error)
@@ -89,6 +90,7 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 		targetAddr: targetAddr,
 		path:       path,
 		onListened: make(chan struct{}),
+		shutdowned: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(ps)
@@ -125,8 +127,22 @@ func (ps *Server) ListenErr() error {
 	return ps.listenErr
 }
 
+func (ps *Server) Shutdowned() <-chan struct{} {
+	return ps.shutdowned
+}
+
+func (ps *Server) ShutdownedBool() bool {
+	select {
+	case <-ps.shutdowned:
+		return true
+	default:
+		return false
+	}
+}
+
 func (ps *Server) Serve() error {
 	defer ps.closeOnListened()
+	defer close(ps.shutdowned)
 
 	if ps.tls {
 		if ps.GetCertificate != nil {
