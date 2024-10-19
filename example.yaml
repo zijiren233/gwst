@@ -4,29 +4,35 @@
   target_addr: "localhost:80"
   path: "/ws"
   tls: true
-  cert_file: "/path/to/cert.pem"
-  key_file: "/path/to/key.pem"
-  server_name: "example.com"
+  cert_file: ""
+  key_file: ""
+  server_name: "www.microsoft.com"
 
 # Client configuration
 - is_client: true
   listen_addr: ":9090"
-  target_addr: "example.com:8080"
-  host: "example.com"
+  target_addr: "127.0.0.1:8080"
+  fallback_addrs:
+    - "127.0.0.1:8083"
+    - "127.0.0.1:8082"
+  host: "www.microsoft.com"
   path: "/ws"
   tls: true
-  server_name: "example.com"
-  insecure: false
+  server_name: "www.microsoft.com"
+  insecure: true
 
 # Another server configuration (without TLS)
 - is_client: false
   listen_addr: ":8081"
   target_addr: "localhost:8000"
+  fallback_addrs:
+    - "localhost:8001"
+    - "localhost:8002"
   path: "/websocket"
 
 # Another client configuration (without TLS)
 - is_client: true
   listen_addr: ":9091"
-  target_addr: "example.org:8081"
-  host: "example.org"
+  target_addr: "localhost:8081"
+  host: "localhost"
   path: "/websocket"

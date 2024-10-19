@@ -7,8 +7,10 @@ import (
 	"math/rand"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/fatih/color"
 	tls "github.com/refraction-networking/utls"
 	"golang.org/x/net/websocket"
 )
@@ -30,8 +32,12 @@ var defaultDialer = &net.Dialer{
 	Timeout: time.Second * 5,
 }
 
-type ConnectConfig struct {
-	Addr        string
+type ConnectAddrConfig struct {
+	Addr          string
+	FallbackAddrs []string
+}
+
+type ConnectDialConfig struct {
 	splitAddr   string
 	splitPort   string
 	Host        string
@@ -45,11 +51,22 @@ type ConnectConfig struct {
 	Dialer      *net.Dialer
 }
 
+type ConnectConfig struct {
+	ConnectAddrConfig
+	ConnectDialConfig
+}
+
 type ConnectOption func(*ConnectConfig)
 
 func WithAddr(addr string) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.Addr = addr
+	}
+}
+
+func WithFallbackAddrs(addrs []string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.FallbackAddrs = addrs
 	}
 }
 
@@ -98,27 +115,107 @@ func WithDialer(dialer *net.Dialer) ConnectOption {
 }
 
 func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
-	cfg := &ConnectConfig{}
+	cfg := ConnectConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt(&cfg)
 	}
 
 	return ConnectWithConfig(ctx, cfg)
 }
 
-func ConnectWithConfig(ctx context.Context, cfg *ConnectConfig) (net.Conn, error) {
-	if cfg == nil {
-		return nil, errors.New("config is nil")
-	}
-	if cfg.Dialer == nil {
-		cfg.Dialer = defaultDialer
-	}
-
-	addr, port, err := parseAddrAndPort(cfg.Addr, cfg.TLS)
+func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error) {
+	dialCfg, err := generateDialConfig(cfg.Addr, cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
 	}
 
+	ws, err := connect(ctx, dialCfg)
+	if err == nil {
+		ws.PayloadType = websocket.BinaryFrame
+		return ws, nil
+	}
+
+	if len(cfg.FallbackAddrs) == 0 {
+		return nil, fmt.Errorf("failed to connect to %s, error: %w", cfg.Addr, err)
+	}
+
+	var errs []error
+	for i := 0; i < len(cfg.FallbackAddrs); i += 3 {
+		end := i + 3
+		if end > len(cfg.FallbackAddrs) {
+			end = len(cfg.FallbackAddrs)
+		}
+		batch := cfg.FallbackAddrs[i:end]
+
+		ws, cerr := connectConcurrent(ctx, dialCfg, batch)
+		if cerr == nil {
+			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", cfg.Addr, err, ws.RemoteAddr().String())
+			ws.PayloadType = websocket.BinaryFrame
+			return ws, nil
+		}
+		errs = append(errs, cerr)
+	}
+
+	return nil, errors.Join(errs...)
+}
+
+func connectConcurrent(ctx context.Context, cfg *ConnectDialConfig, addrs []string) (*websocket.Conn, error) {
+	type result struct {
+		conn *websocket.Conn
+		err  error
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan result, len(addrs))
+	var wg sync.WaitGroup
+
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(addr string) {
+			defer wg.Done()
+			dialCfgCopy, err := generateDialConfig(addr, *cfg)
+			if err != nil {
+				results <- result{nil, err}
+				return
+			}
+			conn, err := connect(ctx, dialCfgCopy)
+			results <- result{conn, err}
+		}(addr)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+		<-ctx.Done()
+		for res := range results {
+			if res.conn != nil {
+				res.conn.Close()
+			}
+		}
+	}()
+
+	var errs []error = make([]error, 0, len(addrs))
+	for res := range results {
+		if res.err == nil {
+			return res.conn, nil
+		}
+		errs = append(errs, res.err)
+	}
+
+	return nil, errors.Join(errs...)
+}
+
+func generateDialConfig(addr string, cfg ConnectDialConfig) (*ConnectDialConfig, error) {
+	if cfg.Dialer == nil {
+		cfg.Dialer = defaultDialer
+	}
+
+	addr, port, err := parseAddrAndPort(addr, cfg.TLS)
+	if err != nil {
+		return nil, err
+	}
 	cfg.splitAddr = addr
 	cfg.splitPort = port
 
@@ -126,7 +223,7 @@ func ConnectWithConfig(ctx context.Context, cfg *ConnectConfig) (net.Conn, error
 		if cfg.ServerName != "" {
 			cfg.Host = cfg.ServerName
 		} else {
-			cfg.Host = cfg.splitAddr
+			cfg.Host = addr
 		}
 	}
 
@@ -136,13 +233,7 @@ func ConnectWithConfig(ctx context.Context, cfg *ConnectConfig) (net.Conn, error
 
 	cfg.Path = ensureLeadingSlash(cfg.Path)
 
-	ws, err := connect(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	ws.PayloadType = websocket.BinaryFrame
-	return ws, nil
+	return &cfg, nil
 }
 
 func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
@@ -171,7 +262,7 @@ func ensureLeadingSlash(path string) string {
 	return path
 }
 
-func connect(ctx context.Context, cfg *ConnectConfig) (*websocket.Conn, error) {
+func connect(ctx context.Context, cfg *ConnectDialConfig) (*websocket.Conn, error) {
 	ws_config, err := createWebsocketConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -204,14 +295,14 @@ func connect(ctx context.Context, cfg *ConnectConfig) (*websocket.Conn, error) {
 	return ws, nil
 }
 
-func createWebsocketConfig(cfg *ConnectConfig) (*websocket.Config, error) {
+func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 	var server, origin string
 	if cfg.TLS {
-		server = fmt.Sprintf("wss://%s%s", cfg.Host, cfg.Path)
-		origin = fmt.Sprintf("https://%s%s", cfg.Host, cfg.Path)
+		server = fmt.Sprintf("wss://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
+		origin = fmt.Sprintf("https://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
 	} else {
-		server = fmt.Sprintf("ws://%s%s", cfg.Host, cfg.Path)
-		origin = fmt.Sprintf("http://%s%s", cfg.Host, cfg.Path)
+		server = fmt.Sprintf("ws://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
+		origin = fmt.Sprintf("http://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
 	}
 	ws_config, err := websocket.NewConfig(server, origin)
 	if err != nil {
@@ -274,8 +365,12 @@ type Dialer struct {
 func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
 	wc := &Dialer{
 		config: ConnectConfig{
-			Addr: addr,
-			Path: path,
+			ConnectAddrConfig: ConnectAddrConfig{
+				Addr: addr,
+			},
+			ConnectDialConfig: ConnectDialConfig{
+				Path: path,
+			},
 		},
 	}
 	for _, option := range options {
@@ -287,7 +382,7 @@ func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
 func (wc *Dialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
 	cfg := wc.config
 	cfg.UDP = strings.HasPrefix(network, "udp")
-	return ConnectWithConfig(ctx, &cfg)
+	return ConnectWithConfig(ctx, cfg)
 }
 
 func (wc *Dialer) Dial(network string) (net.Conn, error) {

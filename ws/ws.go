@@ -15,11 +15,17 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+type NamedTarget struct {
+	Addr          string
+	FallbackAddrs []string
+}
+
 type Server struct {
 	listenAddr            string
 	targetAddr            string
-	allowedTargets        map[string]struct{}
-	namedTargets          map[string]string
+	fallbackAddrs         []string
+	allowedTargets        map[string][]string
+	namedTargets          map[string]NamedTarget
 	server                *http.Server
 	path                  string
 	tls                   bool
@@ -38,6 +44,12 @@ type Server struct {
 
 type WsServerOption func(*Server)
 
+func WithServerFallbackAddrs(fallbackAddrs []string) WsServerOption {
+	return func(ps *Server) {
+		ps.fallbackAddrs = fallbackAddrs
+	}
+}
+
 func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 	return func(ps *Server) {
 		ps.tls = true
@@ -47,19 +59,16 @@ func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 	}
 }
 
-func WithAllowedTargets(allowedTargets []string) WsServerOption {
+func WithAllowedTargets(allowedTargets map[string][]string) WsServerOption {
 	return func(ps *Server) {
 		if len(allowedTargets) == 0 {
 			return
 		}
-		ps.allowedTargets = make(map[string]struct{})
-		for _, target := range allowedTargets {
-			ps.allowedTargets[target] = struct{}{}
-		}
+		ps.allowedTargets = allowedTargets
 	}
 }
 
-func WithNamedTargets(namedTargets map[string]string) WsServerOption {
+func WithNamedTargets(namedTargets map[string]NamedTarget) WsServerOption {
 	return func(ps *Server) {
 		ps.namedTargets = namedTargets
 	}
@@ -217,7 +226,7 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	ws.PayloadType = websocket.BinaryFrame
 
 	protocol := getProtocol(ws.Request().Header.Get("X-Protocol"))
-	target, err := ps.getTarget(
+	target, fallbackAddrs, err := ps.getTarget(
 		ws.Request().Header.Get("X-Target"),
 		ws.Request().Header.Get("X-Named-Target"),
 	)
@@ -228,7 +237,7 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 
 	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tProtocol: %s\n", ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, protocol)
 
-	ps.handle(ws, protocol, target)
+	ps.handle(ws, protocol, target, fallbackAddrs)
 }
 
 func getProtocol(requestProtocol string) string {
@@ -240,29 +249,25 @@ func getProtocol(requestProtocol string) string {
 	}
 }
 
-func (ps *Server) getTarget(requestTarget string, namedTarget string) (string, error) {
+func (ps *Server) getTarget(requestTarget string, namedTarget string) (string, []string, error) {
 	if namedTarget != "" {
 		if target, ok := ps.namedTargets[namedTarget]; ok {
-			return target, nil
+			return target.Addr, target.FallbackAddrs, nil
 		}
 	}
 	if requestTarget == "" || requestTarget == ps.targetAddr || len(ps.allowedTargets) == 0 {
-		return ps.targetAddr, nil
+		return ps.targetAddr, ps.fallbackAddrs, nil
 	}
 
-	if _, ok := ps.allowedTargets[requestTarget]; !ok {
-		return "", fmt.Errorf("target %s not allowed", requestTarget)
+	if v, ok := ps.allowedTargets[requestTarget]; ok {
+		return requestTarget, v, nil
 	}
 
-	return requestTarget, nil
+	return "", nil, fmt.Errorf("target %s not allowed", requestTarget)
 }
 
-func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
-	if target == "" {
-		return
-	}
-
-	conn, err := net.Dial(network, target)
+func (ps *Server) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
+	conn, err := dial(ws.Request().Context(), network, addr, fallbackAddrs)
 	if err != nil {
 		color.Red("Failed to connect to target: %v\n", err)
 		return
@@ -284,6 +289,78 @@ func (ps *Server) handle(ws *websocket.Conn, network string, target string) {
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		color.Yellow("Failed to copy data to Target: %v\n", err)
 	}
+}
+
+func dial(ctx context.Context, network string, addr string, fallbackAddrs []string) (net.Conn, error) {
+	conn, err := net.Dial(network, addr)
+	if err == nil {
+		return conn, nil
+	}
+
+	if len(fallbackAddrs) == 0 {
+		return nil, err
+	}
+
+	var errs []error
+	for i := 0; i < len(fallbackAddrs); i += 3 {
+		end := i + 3
+		if end > len(fallbackAddrs) {
+			end = len(fallbackAddrs)
+		}
+		batch := fallbackAddrs[i:end]
+
+		conn, err := connectDial(ctx, network, batch)
+		if err == nil {
+			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
+			return conn, nil
+		}
+		errs = append(errs, err)
+	}
+
+	return nil, errors.Join(errs...)
+}
+
+func connectDial(ctx context.Context, network string, addrs []string) (net.Conn, error) {
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan result, len(addrs))
+	var wg sync.WaitGroup
+
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(addr string) {
+			defer wg.Done()
+			conn, err := net.Dial(network, addr)
+			results <- result{conn, err}
+		}(addr)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+		<-ctx.Done()
+		for res := range results {
+			if res.conn != nil {
+				res.conn.Close()
+			}
+		}
+	}()
+
+	var errs []error = make([]error, 0, len(addrs))
+	for res := range results {
+		if res.err == nil {
+			return res.conn, nil
+		}
+		errs = append(errs, res.err)
+	}
+
+	return nil, errors.Join(errs...)
 }
 
 type deadlineWriter interface {
