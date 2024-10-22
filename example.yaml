@@ -11,6 +11,7 @@
 # Client configuration
 - is_client: true
   listen_addr: ":9090"
+  load_balance: true
   target_addr: "127.0.0.1:8080"
   fallback_addrs:
     - "127.0.0.1:8083"

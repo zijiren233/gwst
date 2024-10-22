@@ -17,6 +17,7 @@ func init() {
 type Endpoint struct {
 	IsClient       bool                      `yaml:"is_client"`
 	ListenAddr     string                    `yaml:"listen_addr"`
+	LoadBalance    bool                      `yaml:"load_balance"`
 	TargetAddr     string                    `yaml:"target_addr"`
 	FallbackAddrs  []string                  `yaml:"fallback_addrs"`
 	AllowedTargets map[string][]string       `yaml:"allowed_targets"`
@@ -148,6 +149,7 @@ func newServer(config Endpoint) *ws.Server {
 		ws.WithAllowedTargets(config.AllowedTargets),
 		ws.WithNamedTargets(config.NamedTargets),
 		ws.WithServerFallbackAddrs(config.FallbackAddrs),
+		ws.WithServerLoadBalance(config.LoadBalance),
 	}
 	if config.TLS {
 		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
@@ -162,6 +164,7 @@ func newClient(config Endpoint) *ws.Forwarder {
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
 		ws.WithFallbackAddrs(config.FallbackAddrs),
+		ws.WithLoadBalance(config.LoadBalance),
 	}
 	var forwarderOpts []ws.ForwarderOption
 	if config.TLS {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -22,6 +23,7 @@ type NamedTarget struct {
 
 type Server struct {
 	listenAddr            string
+	loadBalance           bool
 	targetAddr            string
 	fallbackAddrs         []string
 	allowedTargets        map[string][]string
@@ -90,6 +92,12 @@ func WithServerBufferSize(size int) WsServerOption {
 func WithSelfSignedCert(opts ...selfSignedCertOption) WsServerOption {
 	return func(ps *Server) {
 		ps.selfSignedCertOptions = opts
+	}
+}
+
+func WithServerLoadBalance(loadBalance bool) WsServerOption {
+	return func(ps *Server) {
+		ps.loadBalance = loadBalance
 	}
 }
 
@@ -237,6 +245,10 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 
 	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tProtocol: %s\n", ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, protocol)
 
+	if ps.loadBalance {
+		target, fallbackAddrs = ps.balanceTargets(target, fallbackAddrs)
+	}
+
 	ps.handle(ws, protocol, target, fallbackAddrs)
 }
 
@@ -266,6 +278,19 @@ func (ps *Server) getTarget(requestTarget string, namedTarget string) (string, [
 	return "", nil, fmt.Errorf("target %s not allowed", requestTarget)
 }
 
+func (ps *Server) balanceTargets(target string, fallbackAddrs []string) (string, []string) {
+	if len(fallbackAddrs) == 0 {
+		return target, fallbackAddrs
+	}
+
+	allAddrs := append([]string{target}, fallbackAddrs...)
+	rand.Shuffle(len(allAddrs), func(i, j int) {
+		allAddrs[i], allAddrs[j] = allAddrs[j], allAddrs[i]
+	})
+
+	return allAddrs[0], allAddrs[1:]
+}
+
 func (ps *Server) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
 	conn, err := dial(ws.Request().Context(), network, addr, fallbackAddrs)
 	if err != nil {
@@ -277,17 +302,17 @@ func (ps *Server) handle(ws *websocket.Conn, network string, addr string, fallba
 	go func() {
 		buffer := ps.getBuffer()
 		defer ps.putBuffer(buffer)
-		_, err = CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout)
+		_, err = CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout)
 		if err != nil && !errors.Is(err, net.ErrClosed) {
-			color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+			color.Yellow("Failed to copy data to Target: %v\n", err)
 		}
 	}()
 
 	buffer := ps.getBuffer()
 	defer ps.putBuffer(buffer)
-	_, err = CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout)
+	_, err = CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
-		color.Yellow("Failed to copy data to Target: %v\n", err)
+		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
 	}
 }
 

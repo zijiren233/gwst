@@ -49,6 +49,7 @@ type ConnectDialConfig struct {
 	Insecure    bool
 	UDP         bool
 	Dialer      *net.Dialer
+	LoadBalance bool
 }
 
 type ConnectConfig struct {
@@ -114,6 +115,12 @@ func WithDialer(dialer *net.Dialer) ConnectOption {
 	}
 }
 
+func WithLoadBalance(loadBalance bool) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.LoadBalance = loadBalance
+	}
+}
+
 func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
 	cfg := ConnectConfig{}
 	for _, opt := range opts {
@@ -127,6 +134,10 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 	dialCfg, err := generateDialConfig(cfg.Addr, cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.LoadBalance {
+		cfg.Addr, cfg.FallbackAddrs = balanceTargets(cfg.Addr, cfg.FallbackAddrs)
 	}
 
 	ws, err := connect(ctx, dialCfg)
@@ -157,6 +168,19 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 	}
 
 	return nil, errors.Join(errs...)
+}
+
+func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
+	if len(fallbackAddrs) == 0 {
+		return target, fallbackAddrs
+	}
+
+	allAddrs := append([]string{target}, fallbackAddrs...)
+	rand.Shuffle(len(allAddrs), func(i, j int) {
+		allAddrs[i], allAddrs[j] = allAddrs[j], allAddrs[i]
+	})
+
+	return allAddrs[0], allAddrs[1:]
 }
 
 func connectConcurrent(ctx context.Context, cfg *ConnectDialConfig, addrs []string) (*websocket.Conn, error) {
