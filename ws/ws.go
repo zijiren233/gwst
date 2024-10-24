@@ -22,26 +22,30 @@ type NamedTarget struct {
 }
 
 type Server struct {
-	listenAddr            string
-	loadBalance           bool
-	targetAddr            string
-	fallbackAddrs         []string
-	allowedTargets        map[string][]string
-	namedTargets          map[string]NamedTarget
-	server                *http.Server
-	path                  string
+	listenAddr     string
+	loadBalance    bool
+	targetAddr     string
+	fallbackAddrs  []string
+	allowedTargets map[string][]string
+	namedTargets   map[string]NamedTarget
+	path           string
+
 	tls                   bool
 	serverName            string
 	certFile              string
 	keyFile               string
 	selfSignedCertOptions []selfSignedCertOption
-	onListened            chan struct{}
-	shutdowned            chan struct{}
-	listenErr             error
-	onListenCloseOnce     sync.Once
 	GetCertificate        func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	bufferSize            int
-	bufferPool            *sync.Pool
+
+	server *http.Server
+
+	onListened        chan struct{}
+	shutdowned        chan struct{}
+	listenErr         error
+	onListenCloseOnce sync.Once
+
+	bufferSize int
+	bufferPool *sync.Pool
 }
 
 type WsServerOption func(*Server)
@@ -63,10 +67,9 @@ func WithTLS(certFile, keyFile, serverName string) WsServerOption {
 
 func WithAllowedTargets(allowedTargets map[string][]string) WsServerOption {
 	return func(ps *Server) {
-		if len(allowedTargets) == 0 {
-			return
+		if len(allowedTargets) > 0 {
+			ps.allowedTargets = allowedTargets
 		}
-		ps.allowedTargets = allowedTargets
 	}
 }
 
@@ -109,13 +112,16 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 		onListened: make(chan struct{}),
 		shutdowned: make(chan struct{}),
 	}
+
 	for _, opt := range opts {
 		opt(ps)
 	}
+
 	if ps.bufferSize == 0 {
 		ps.bufferSize = DefaultBufferSize
 	}
 	ps.bufferPool = newBufferPool(ps.bufferSize)
+
 	mux := http.NewServeMux()
 	mux.Handle(ps.path, websocket.Handler(ps.handleWebSocket))
 	ps.server = &http.Server{
@@ -124,15 +130,21 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 		ReadHeaderTimeout: time.Second * 5,
 		MaxHeaderBytes:    16 * 1024,
 	}
+
 	return ps
 }
 
 func (ps *Server) getBuffer() *[]byte {
-	return ps.bufferPool.Get().(*[]byte)
+	buffer := ps.bufferPool.Get().(*[]byte)
+	*buffer = (*buffer)[:cap(*buffer)]
+	return buffer
 }
 
 func (ps *Server) putBuffer(buffer *[]byte) {
-	ps.bufferPool.Put(buffer)
+	if buffer != nil {
+		*buffer = (*buffer)[:cap(*buffer)]
+		ps.bufferPool.Put(buffer)
+	}
 }
 
 func (ps *Server) closeOnListened() {
@@ -199,7 +211,6 @@ func (ps *Server) listenAndServeTLS(certFile, keyFile string) error {
 	}
 
 	ps.closeOnListened()
-
 	defer ln.Close()
 
 	return ps.server.ServeTLS(ln, certFile, keyFile)
@@ -217,7 +228,6 @@ func (ps *Server) listenAndServe() error {
 	}
 
 	ps.closeOnListened()
-
 	return ps.server.Serve(ln)
 }
 
@@ -243,7 +253,8 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 		return
 	}
 
-	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tProtocol: %s\n", ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, protocol)
+	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s\n",
+		ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, fallbackAddrs, protocol)
 
 	if ps.loadBalance {
 		target, fallbackAddrs = ps.balanceTargets(target, fallbackAddrs)
@@ -292,6 +303,52 @@ func (ps *Server) balanceTargets(target string, fallbackAddrs []string) (string,
 }
 
 func (ps *Server) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
+	if network == "udp" {
+		ps.handleUDP(ws, addr, fallbackAddrs)
+		return
+	}
+	ps.handleNetwork(ws, network, addr, fallbackAddrs)
+}
+
+func (ps *Server) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []string) {
+	buffer := ps.getBuffer()
+	defer ps.putBuffer(buffer)
+
+	ws.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := ws.Read(*buffer)
+	if err != nil {
+		color.Red("Failed to read from WebSocket: %v\n", err)
+		return
+	}
+	ws.SetReadDeadline(time.Time{})
+
+	readBuffer, rn, conn, err := ps.dialUdp(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
+	if err != nil {
+		ps.putBuffer(readBuffer)
+		color.Red("Failed to connect to UDP target: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	if _, err = ws.Write((*readBuffer)[:rn]); err != nil {
+		ps.putBuffer(readBuffer)
+		color.Red("Failed to write to WebSocket: %v\n", err)
+		return
+	}
+
+	go func() {
+		defer ps.putBuffer(readBuffer)
+		if _, err := CopyBufferWithWriteTimeout(conn, ws, *readBuffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+			color.Yellow("Failed to copy data to Target: %v\n", err)
+		}
+	}()
+
+	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+	}
+}
+
+func (ps *Server) handleNetwork(ws *websocket.Conn, network, addr string, fallbackAddrs []string) {
 	conn, err := dial(ws.Request().Context(), network, addr, fallbackAddrs)
 	if err != nil {
 		color.Red("Failed to connect to target: %v\n", err)
@@ -302,21 +359,19 @@ func (ps *Server) handle(ws *websocket.Conn, network string, addr string, fallba
 	go func() {
 		buffer := ps.getBuffer()
 		defer ps.putBuffer(buffer)
-		_, err = CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout)
-		if err != nil && !errors.Is(err, net.ErrClosed) {
+		if _, err := CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
 			color.Yellow("Failed to copy data to Target: %v\n", err)
 		}
 	}()
 
 	buffer := ps.getBuffer()
 	defer ps.putBuffer(buffer)
-	_, err = CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout)
-	if err != nil && !errors.Is(err, net.ErrClosed) {
+	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
 		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
 	}
 }
 
-func dial(ctx context.Context, network string, addr string, fallbackAddrs []string) (net.Conn, error) {
+func dial(_ context.Context, network, addr string, fallbackAddrs []string) (net.Conn, error) {
 	conn, err := net.Dial(network, addr)
 	if err == nil {
 		return conn, nil
@@ -326,66 +381,64 @@ func dial(ctx context.Context, network string, addr string, fallbackAddrs []stri
 		return nil, err
 	}
 
-	var errs []error
-	for i := 0; i < len(fallbackAddrs); i += 3 {
-		end := i + 3
-		if end > len(fallbackAddrs) {
-			end = len(fallbackAddrs)
-		}
-		batch := fallbackAddrs[i:end]
-
-		conn, err := connectDial(ctx, network, batch)
-		if err == nil {
-			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
+	errs := []error{err}
+	for _, addr := range fallbackAddrs {
+		conn, batchErr := net.Dial("tcp", addr)
+		if batchErr == nil {
 			return conn, nil
 		}
-		errs = append(errs, err)
+		errs = append(errs, batchErr)
 	}
-
 	return nil, errors.Join(errs...)
 }
 
-func connectDial(ctx context.Context, network string, addrs []string) (net.Conn, error) {
-	type result struct {
-		conn net.Conn
-		err  error
+func (ps *Server) dialUdp(ctx context.Context, preWrite []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
+	buffer, rn, conn, err := ps.dialAndCheckUdp(ctx, preWrite, addr)
+	if err == nil {
+		return buffer, rn, conn, nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	results := make(chan result, len(addrs))
-	var wg sync.WaitGroup
-
-	for _, addr := range addrs {
-		wg.Add(1)
-		go func(addr string) {
-			defer wg.Done()
-			conn, err := net.Dial(network, addr)
-			results <- result{conn, err}
-		}(addr)
+	if len(fallbackAddrs) == 0 {
+		return nil, 0, nil, err
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-		<-ctx.Done()
-		for res := range results {
-			if res.conn != nil {
-				res.conn.Close()
-			}
+	errs := []error{err}
+	for _, addr := range fallbackAddrs {
+		buffer, rn, conn, batchErr := ps.dialAndCheckUdp(ctx, preWrite, addr)
+		if batchErr == nil {
+			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
+			return buffer, rn, conn, nil
 		}
-	}()
+		errs = append(errs, batchErr)
+	}
+	return nil, 0, nil, errors.Join(errs...)
+}
 
-	var errs []error = make([]error, 0, len(addrs))
-	for res := range results {
-		if res.err == nil {
-			return res.conn, nil
-		}
-		errs = append(errs, res.err)
+func (ps *Server) dialAndCheckUdp(_ context.Context, preWrite []byte, addr string) (*[]byte, int, net.Conn, error) {
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		return nil, 0, nil, err
 	}
 
-	return nil, errors.Join(errs...)
+	n, err := conn.Write(preWrite)
+	if err != nil {
+		conn.Close()
+		return nil, 0, nil, err
+	}
+	if len(preWrite) != n {
+		conn.Close()
+		return nil, 0, nil, errors.New("invalid write result")
+	}
+
+	buffer := ps.getBuffer()
+	rn, err := conn.Read(*buffer)
+	if err != nil {
+		ps.putBuffer(buffer)
+		conn.Close()
+		return nil, 0, nil, err
+	}
+
+	return buffer, rn, conn, nil
 }
 
 type deadlineWriter interface {

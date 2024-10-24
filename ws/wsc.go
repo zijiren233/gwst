@@ -221,11 +221,16 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 }
 
 func (wf *Forwarder) getBuffer() *[]byte {
-	return wf.bufferPool.Get().(*[]byte)
+	buffer := wf.bufferPool.Get().(*[]byte)
+	*buffer = (*buffer)[:cap(*buffer)]
+	return buffer
 }
 
 func (wf *Forwarder) putBuffer(buffer *[]byte) {
-	wf.bufferPool.Put(buffer)
+	if buffer != nil {
+		*buffer = (*buffer)[:cap(*buffer)]
+		wf.bufferPool.Put(buffer)
+	}
 }
 
 func (wf *Forwarder) cleanupUDPIdleConnections() {
