@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	DefaultUDPPoolSize  = 512
-	DefaultBufferSize   = 16 * 1024
-	DefaultWriteTimeout = 15 * time.Second
+	DefaultUDPPoolSize        = 512
+	DefaultBufferSize         = 16 * 1024
+	DefaultWriteTimeout       = 15 * time.Second
+	DefaultUDPCleanupInterval = 15 * time.Second
+	DefaultUDPIdleTimeout     = time.Minute
 )
 
 var sharedBufferPool = sync.Pool{
@@ -37,40 +39,6 @@ func newBufferPool(size int) *sync.Pool {
 			return &buffer
 		},
 	}
-}
-
-type UDPConn struct {
-	*net.UDPConn
-	readDeadline  time.Time
-	writeDeadline time.Time
-}
-
-func (c *UDPConn) Read(b []byte) (int, error) {
-	if !c.readDeadline.IsZero() {
-		if err := c.UDPConn.SetReadDeadline(c.readDeadline); err != nil {
-			return 0, err
-		}
-	}
-	return c.UDPConn.Read(b)
-}
-
-func (c *UDPConn) Write(b []byte) (int, error) {
-	if !c.writeDeadline.IsZero() {
-		if err := c.UDPConn.SetWriteDeadline(c.writeDeadline); err != nil {
-			return 0, err
-		}
-	}
-	return c.UDPConn.Write(b)
-}
-
-func (c *UDPConn) SetReadDeadline(t time.Time) error {
-	c.readDeadline = t
-	return nil
-}
-
-func (c *UDPConn) SetWriteDeadline(t time.Time) error {
-	c.writeDeadline = t
-	return nil
 }
 
 type udpConnInfo struct {
@@ -145,23 +113,25 @@ func (u *udpConnInfo) SetLastActive(t time.Time) {
 }
 
 type Forwarder struct {
-	listenAddr        string
-	wsDialer          *Dialer
-	udpConns          rwmap.RWMap[string, *udpConnInfo]
-	tcpListener       net.Listener
-	udpConn           *net.UDPConn
-	onListened        chan struct{}
-	onListenCloseOnce sync.Once
-	shutdowned        chan struct{}
-	listenErr         error
-	disableTCP        bool
-	disableUDP        bool
-	udpPool           *ants.Pool
-	useSharedUDPPool  bool
-	udpPoolSize       int
-	udpPoolPreAlloc   bool
-	bufferSize        int
-	bufferPool        *sync.Pool
+	listenAddr         string
+	wsDialer           *Dialer
+	udpConns           rwmap.RWMap[string, *udpConnInfo]
+	tcpListener        net.Listener
+	udpConn            *net.UDPConn
+	onListened         chan struct{}
+	onListenCloseOnce  sync.Once
+	shutdowned         chan struct{}
+	listenErr          error
+	disableTCP         bool
+	disableUDP         bool
+	udpPool            *ants.Pool
+	useSharedUDPPool   bool
+	udpPoolSize        int
+	udpPoolPreAlloc    bool
+	bufferSize         int
+	bufferPool         *sync.Pool
+	udpCleanupInterval time.Duration
+	udpIdleTimeout     time.Duration
 }
 
 type ForwarderOption func(*Forwarder)
@@ -203,6 +173,18 @@ func WithBufferSize(size int) ForwarderOption {
 	}
 }
 
+func WithUDPCleanupInterval(interval time.Duration) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpCleanupInterval = interval
+	}
+}
+
+func WithUDPIdleTimeout(timeout time.Duration) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpIdleTimeout = timeout
+	}
+}
+
 func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) *Forwarder {
 	wf := &Forwarder{
 		listenAddr: listenAddr,
@@ -215,6 +197,12 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	}
 	if wf.bufferSize == 0 {
 		wf.bufferSize = DefaultBufferSize
+	}
+	if wf.udpCleanupInterval == 0 {
+		wf.udpCleanupInterval = DefaultUDPCleanupInterval
+	}
+	if wf.udpIdleTimeout == 0 {
+		wf.udpIdleTimeout = DefaultUDPIdleTimeout
 	}
 	wf.bufferPool = newBufferPool(wf.bufferSize)
 	return wf
@@ -234,14 +222,14 @@ func (wf *Forwarder) putBuffer(buffer *[]byte) {
 }
 
 func (wf *Forwarder) cleanupUDPIdleConnections() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(wf.udpCleanupInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			now := time.Now()
 			wf.udpConns.Range(func(key string, value *udpConnInfo) bool {
-				if now.Sub(value.GetLastActive()) <= 3*time.Minute {
+				if now.Sub(value.GetLastActive()) <= wf.udpIdleTimeout {
 					return true
 				}
 				if wf.udpConns.CompareAndDelete(key, value) {

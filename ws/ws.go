@@ -16,6 +16,10 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+const (
+	DefaultUDPDialReadTimeout = time.Second / 2
+)
+
 type NamedTarget struct {
 	Addr          string
 	FallbackAddrs []string
@@ -46,6 +50,10 @@ type Server struct {
 
 	bufferSize int
 	bufferPool *sync.Pool
+
+	disableTcpProtocol bool
+	disableUdpProtocol bool
+	udpDialReadTimeout time.Duration
 }
 
 type WsServerOption func(*Server)
@@ -104,6 +112,24 @@ func WithServerLoadBalance(loadBalance bool) WsServerOption {
 	}
 }
 
+func WithServerUDPDialReadTimeout(timeout time.Duration) WsServerOption {
+	return func(ps *Server) {
+		ps.udpDialReadTimeout = timeout
+	}
+}
+
+func WithServerDisableTcpProtocol(disable bool) WsServerOption {
+	return func(ps *Server) {
+		ps.disableTcpProtocol = disable
+	}
+}
+
+func WithServerDisableUdpProtocol(disable bool) WsServerOption {
+	return func(ps *Server) {
+		ps.disableUdpProtocol = disable
+	}
+}
+
 func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Server {
 	ps := &Server{
 		listenAddr: listenAddr,
@@ -121,6 +147,10 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 		ps.bufferSize = DefaultBufferSize
 	}
 	ps.bufferPool = newBufferPool(ps.bufferSize)
+
+	if ps.udpDialReadTimeout == 0 {
+		ps.udpDialReadTimeout = DefaultUDPDialReadTimeout
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle(ps.path, websocket.Handler(ps.handleWebSocket))
@@ -175,6 +205,10 @@ func (ps *Server) ShutdownedBool() bool {
 }
 
 func (ps *Server) Serve() error {
+	if ps.disableTcpProtocol && ps.disableUdpProtocol {
+		return errors.New("both TCP and UDP protocols are disabled")
+	}
+
 	defer ps.closeOnListened()
 	defer close(ps.shutdowned)
 
@@ -244,6 +278,14 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	ws.PayloadType = websocket.BinaryFrame
 
 	protocol := getProtocol(ws.Request().Header.Get("X-Protocol"))
+	if ps.disableTcpProtocol && protocol == "tcp" {
+		color.Red("TCP protocol is disabled")
+		return
+	}
+	if ps.disableUdpProtocol && protocol == "udp" {
+		color.Red("UDP protocol is disabled")
+		return
+	}
 	target, fallbackAddrs, err := ps.getTarget(
 		ws.Request().Header.Get("X-Target"),
 		ws.Request().Header.Get("X-Named-Target"),
@@ -431,12 +473,14 @@ func (ps *Server) dialAndCheckUdp(_ context.Context, preWrite []byte, addr strin
 	}
 
 	buffer := ps.getBuffer()
+	conn.SetReadDeadline(time.Now().Add(ps.udpDialReadTimeout))
 	rn, err := conn.Read(*buffer)
 	if err != nil {
 		ps.putBuffer(buffer)
 		conn.Close()
 		return nil, 0, nil, err
 	}
+	conn.SetReadDeadline(time.Time{})
 
 	return buffer, rn, conn, nil
 }
