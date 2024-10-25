@@ -29,6 +29,20 @@ var sharedBufferPool = sync.Pool{
 	},
 }
 
+var sharedUDPConnInfoPool = sync.Pool{
+	New: func() interface{} {
+		return &udpConnInfo{}
+	},
+}
+
+func getUDPConnInfo() *udpConnInfo {
+	return sharedUDPConnInfoPool.Get().(*udpConnInfo)
+}
+
+func putUDPConnInfo(u *udpConnInfo) {
+	sharedUDPConnInfoPool.Put(u)
+}
+
 func newBufferPool(size int) *sync.Pool {
 	if size == DefaultBufferSize || size <= 0 {
 		return &sharedBufferPool
@@ -448,7 +462,9 @@ func (wf *Forwarder) processUDP() error {
 		defer wf.putBuffer(buffer)
 
 		key := remoteAddr.String()
-		value, loaded := wf.udpConns.LoadOrStore(key, &udpConnInfo{dialer: wf.wsDialer})
+		connInfo := getUDPConnInfo()
+		connInfo.dialer = wf.wsDialer
+		value, loaded := wf.udpConns.LoadOrStore(key, connInfo)
 		if !loaded {
 			if _, err := value.Setup(); err != nil {
 				color.Red("Failed to setup new UDP in websocket connection: %v", err)
@@ -456,6 +472,9 @@ func (wf *Forwarder) processUDP() error {
 				return
 			}
 			go wf.handleUDPResponse(value, remoteAddr)
+		} else {
+			connInfo.dialer = nil
+			putUDPConnInfo(connInfo)
 		}
 
 		_, err := value.Write((*buffer)[:n])

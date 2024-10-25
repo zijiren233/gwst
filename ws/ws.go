@@ -165,9 +165,7 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 }
 
 func (ps *Server) getBuffer() *[]byte {
-	buffer := ps.bufferPool.Get().(*[]byte)
-	*buffer = (*buffer)[:cap(*buffer)]
-	return buffer
+	return ps.bufferPool.Get().(*[]byte)
 }
 
 func (ps *Server) putBuffer(buffer *[]byte) {
