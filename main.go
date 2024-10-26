@@ -15,25 +15,25 @@ func init() {
 }
 
 type Endpoint struct {
-	IsClient           bool                      `yaml:"is_client"`
-	ListenAddr         string                    `yaml:"listen_addr"`
-	LoadBalance        bool                      `yaml:"load_balance"`
-	TargetAddr         string                    `yaml:"target_addr"`
-	FallbackAddrs      []string                  `yaml:"fallback_addrs"`
-	AllowedTargets     map[string][]string       `yaml:"allowed_targets"`
-	NamedTargets       map[string]ws.NamedTarget `yaml:"named_targets"`
-	Target             string                    `yaml:"target"`
-	NamedTarget        string                    `yaml:"named_target"`
-	Host               string                    `yaml:"host"`
-	Path               string                    `yaml:"path"`
-	TLS                bool                      `yaml:"tls"`
-	CertFile           string                    `yaml:"cert_file"`
-	KeyFile            string                    `yaml:"key_file"`
-	ServerName         string                    `yaml:"server_name"`
-	Insecure           bool                      `yaml:"insecure"`
-	DisableTCP         bool                      `yaml:"disable_tcp"`
-	DisableUDP         bool                      `yaml:"disable_udp"`
-	EnableUdpEarlyData bool                      `yaml:"enable_udp_early_data"`
+	IsClient            bool                      `yaml:"is_client"`
+	ListenAddr          string                    `yaml:"listen_addr"`
+	LoadBalance         bool                      `yaml:"load_balance"`
+	TargetAddr          string                    `yaml:"target_addr"`
+	FallbackAddrs       []string                  `yaml:"fallback_addrs"`
+	AllowedTargets      map[string][]string       `yaml:"allowed_targets"`
+	NamedTargets        map[string]ws.NamedTarget `yaml:"named_targets"`
+	Target              string                    `yaml:"target"`
+	NamedTarget         string                    `yaml:"named_target"`
+	Host                string                    `yaml:"host"`
+	Path                string                    `yaml:"path"`
+	TLS                 bool                      `yaml:"tls"`
+	CertFile            string                    `yaml:"cert_file"`
+	KeyFile             string                    `yaml:"key_file"`
+	ServerName          string                    `yaml:"server_name"`
+	Insecure            bool                      `yaml:"insecure"`
+	DisableTCP          bool                      `yaml:"disable_tcp"`
+	DisableUDP          bool                      `yaml:"disable_udp"`
+	DisableUdpEarlyData bool                      `yaml:"disable_udp_early_data"`
 }
 
 func main() {
@@ -177,8 +177,8 @@ func newClient(config Endpoint) *ws.Forwarder {
 	if config.DisableUDP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDP())
 	}
-	if config.EnableUdpEarlyData {
-		forwarderOpts = append(forwarderOpts, ws.WithEnableUdpEarlyData())
+	if config.DisableUdpEarlyData {
+		forwarderOpts = append(forwarderOpts, ws.WithDisableUdpEarlyData())
 	}
 	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
 	return ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
