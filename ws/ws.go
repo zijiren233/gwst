@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +18,9 @@ import (
 )
 
 const (
-	DefaultUDPDialReadTimeout = time.Second / 2
+	DefaultUDPDialReadTimeout     = time.Second / 2
+	DefaultUdpEarlyDataHeaderName = "Sec-WebSocket-Protocol"
+	DefaultUdpMaxEarlyDataSize    = 4 * 1024
 )
 
 type NamedTarget struct {
@@ -51,9 +54,10 @@ type Server struct {
 	bufferSize int
 	bufferPool *sync.Pool
 
-	disableTcpProtocol bool
-	disableUdpProtocol bool
-	udpDialReadTimeout time.Duration
+	disableTcpProtocol     bool
+	disableUdpProtocol     bool
+	udpDialReadTimeout     time.Duration
+	udpEarlyDataHeaderName string
 }
 
 type WsServerOption func(*Server)
@@ -130,6 +134,12 @@ func WithServerDisableUdpProtocol(disable bool) WsServerOption {
 	}
 }
 
+func WithServerUdpEarlyDataHeaderName(name string) WsServerOption {
+	return func(ps *Server) {
+		ps.udpEarlyDataHeaderName = name
+	}
+}
+
 func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Server {
 	ps := &Server{
 		listenAddr: listenAddr,
@@ -150,6 +160,9 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 
 	if ps.udpDialReadTimeout == 0 {
 		ps.udpDialReadTimeout = DefaultUDPDialReadTimeout
+	}
+	if ps.udpEarlyDataHeaderName == "" {
+		ps.udpEarlyDataHeaderName = DefaultUdpEarlyDataHeaderName
 	}
 
 	mux := http.NewServeMux()
@@ -354,13 +367,34 @@ func (ps *Server) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 	buffer := ps.getBuffer()
 	defer ps.putBuffer(buffer)
 
-	ws.SetReadDeadline(time.Now().Add(time.Second))
-	n, err := ws.Read(*buffer)
-	if err != nil {
-		color.Red("Failed to read from WebSocket: %v\n", err)
-		return
+	var (
+		n   int
+		err error
+	)
+	base64Str := ws.Request().Header.Get(ps.udpEarlyDataHeaderName)
+	if base64Str != "" {
+		n, err = base64.StdEncoding.Decode(*buffer, stringToBytes(base64Str))
+		if err != nil {
+			color.Red("Failed to decode X-0RTT header: %v\n", err)
+			return
+		}
+	} else {
+		err = ws.SetReadDeadline(time.Now().Add(time.Second))
+		if err != nil {
+			color.Red("Failed to set read deadline: %v", err)
+			return
+		}
+		n, err = ws.Read(*buffer)
+		if err != nil {
+			color.Red("Failed to read from WebSocket: %v\n", err)
+			return
+		}
+		err = ws.SetReadDeadline(time.Time{})
+		if err != nil {
+			color.Red("Failed to set read deadline: %v", err)
+			return
+		}
 	}
-	ws.SetReadDeadline(time.Time{})
 
 	readBuffer, rn, conn, err := ps.dialUdp(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
 	if err != nil {
@@ -432,8 +466,8 @@ func dial(_ context.Context, network, addr string, fallbackAddrs []string) (net.
 	return nil, errors.Join(errs...)
 }
 
-func (ps *Server) dialUdp(ctx context.Context, preWrite []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
-	buffer, rn, conn, err := ps.dialAndCheckUdp(ctx, preWrite, addr)
+func (ps *Server) dialUdp(ctx context.Context, earlyData []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
+	buffer, rn, conn, err := ps.dialAndCheckUdp(ctx, earlyData, addr)
 	if err == nil {
 		return buffer, rn, conn, nil
 	}
@@ -444,7 +478,7 @@ func (ps *Server) dialUdp(ctx context.Context, preWrite []byte, addr string, fal
 
 	errs := []error{err}
 	for _, addr := range fallbackAddrs {
-		buffer, rn, conn, batchErr := ps.dialAndCheckUdp(ctx, preWrite, addr)
+		buffer, rn, conn, batchErr := ps.dialAndCheckUdp(ctx, earlyData, addr)
 		if batchErr == nil {
 			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
 			return buffer, rn, conn, nil
@@ -454,31 +488,41 @@ func (ps *Server) dialUdp(ctx context.Context, preWrite []byte, addr string, fal
 	return nil, 0, nil, errors.Join(errs...)
 }
 
-func (ps *Server) dialAndCheckUdp(_ context.Context, preWrite []byte, addr string) (*[]byte, int, net.Conn, error) {
+func (ps *Server) dialAndCheckUdp(_ context.Context, earlyData []byte, addr string) (*[]byte, int, net.Conn, error) {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 
-	n, err := conn.Write(preWrite)
+	n, err := conn.Write(earlyData)
 	if err != nil {
 		conn.Close()
 		return nil, 0, nil, err
 	}
-	if len(preWrite) != n {
+	if len(earlyData) != n {
 		conn.Close()
 		return nil, 0, nil, errors.New("invalid write result")
 	}
 
 	buffer := ps.getBuffer()
-	conn.SetReadDeadline(time.Now().Add(ps.udpDialReadTimeout))
+	err = conn.SetReadDeadline(time.Now().Add(ps.udpDialReadTimeout))
+	if err != nil {
+		ps.putBuffer(buffer)
+		conn.Close()
+		return nil, 0, nil, err
+	}
 	rn, err := conn.Read(*buffer)
 	if err != nil {
 		ps.putBuffer(buffer)
 		conn.Close()
 		return nil, 0, nil, err
 	}
-	conn.SetReadDeadline(time.Time{})
+	err = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		ps.putBuffer(buffer)
+		conn.Close()
+		return nil, 0, nil, err
+	}
 
 	return buffer, rn, conn, nil
 }
@@ -492,7 +536,10 @@ func CopyBufferWithWriteTimeout(dst deadlineWriter, src io.Reader, buf []byte, t
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
-			dst.SetWriteDeadline(time.Now().Add(timeout))
+			err = dst.SetWriteDeadline(time.Now().Add(timeout))
+			if err != nil {
+				break
+			}
 			nw, ew := dst.Write(buf[0:nr])
 			if nw < 0 || nr < nw {
 				nw = 0

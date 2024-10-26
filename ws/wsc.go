@@ -1,10 +1,12 @@
 package ws
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +33,9 @@ var sharedBufferPool = sync.Pool{
 
 var sharedUDPConnInfoPool = sync.Pool{
 	New: func() interface{} {
-		return &udpConnInfo{}
+		return &udpConnInfo{
+			setUpDone: make(chan struct{}),
+		}
 	},
 }
 
@@ -57,17 +61,25 @@ func newBufferPool(size int) *sync.Pool {
 
 type udpConnInfo struct {
 	net.Conn
-	dialLock   sync.Mutex
-	dialErr    error
-	dialer     *Dialer
-	lastActive atomic.Int64
-	closed     bool
+	dialLock      sync.Mutex
+	dialErr       error
+	dialer        *Dialer
+	lastActive    atomic.Int64
+	closed        bool
+	setUpDone     chan struct{}
+	setUpDoneOnce sync.Once
 }
 
 func (u *udpConnInfo) Close() error {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+	if u.closed {
+		return nil
+	}
 	u.closed = true
+	u.setUpDoneOnce.Do(func() {
+		close(u.setUpDone)
+	})
 	if u.Conn != nil {
 		return u.Conn.Close()
 	}
@@ -77,6 +89,9 @@ func (u *udpConnInfo) Close() error {
 func (u *udpConnInfo) Setup() (net.Conn, error) {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+	defer u.setUpDoneOnce.Do(func() {
+		close(u.setUpDone)
+	})
 	if u.closed {
 		return nil, net.ErrClosed
 	}
@@ -95,11 +110,45 @@ func (u *udpConnInfo) Setup() (net.Conn, error) {
 	return conn, nil
 }
 
-func (u *udpConnInfo) Read(b []byte) (int, error) {
-	conn, err := u.Setup()
-	if err != nil {
-		return 0, err
+func (u *udpConnInfo) SetupWithEarlyData(earlyData []byte, earlyDataHeaderName string) (net.Conn, error) {
+	u.dialLock.Lock()
+	defer u.dialLock.Unlock()
+	u.setUpDoneOnce.Do(func() {
+		close(u.setUpDone)
+	})
+	if u.closed {
+		return nil, net.ErrClosed
 	}
+	if u.dialErr != nil {
+		return nil, u.dialErr
+	}
+	if u.Conn != nil {
+		return u.Conn, nil
+	}
+	var conn net.Conn
+	headers := http.Header{}
+	headers.Set(earlyDataHeaderName, base64.StdEncoding.EncodeToString(earlyData))
+	conn, u.dialErr = u.dialer.DialUDP(WithAppendHeaders(headers))
+	if u.dialErr != nil {
+		return nil, u.dialErr
+	}
+	u.Conn = conn
+	return conn, nil
+}
+
+func (u *udpConnInfo) Read(b []byte) (int, error) {
+	<-u.setUpDone
+	u.dialLock.Lock()
+	if u.closed {
+		u.dialLock.Unlock()
+		return 0, net.ErrClosed
+	}
+	if u.dialErr != nil {
+		u.dialLock.Unlock()
+		return 0, u.dialErr
+	}
+	conn := u.Conn
+	u.dialLock.Unlock()
 	u.SetLastActive(time.Now())
 	n, err := conn.Read(b)
 	u.SetLastActive(time.Now())
@@ -107,15 +156,29 @@ func (u *udpConnInfo) Read(b []byte) (int, error) {
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
-	conn, err := u.Setup()
+	<-u.setUpDone
+	u.dialLock.Lock()
+	if u.closed {
+		u.dialLock.Unlock()
+		return 0, net.ErrClosed
+	}
+	if u.dialErr != nil {
+		u.dialLock.Unlock()
+		return 0, u.dialErr
+	}
+	conn := u.Conn
+	u.dialLock.Unlock()
+	u.SetLastActive(time.Now())
+	err := conn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
+	if err != nil {
+		return 0, err
+	}
+	n, err := conn.Write(b)
 	if err != nil {
 		return 0, err
 	}
 	u.SetLastActive(time.Now())
-	conn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
-	n, err := conn.Write(b)
-	u.SetLastActive(time.Now())
-	return n, err
+	return n, nil
 }
 
 func (u *udpConnInfo) GetLastActive() time.Time {
@@ -127,25 +190,28 @@ func (u *udpConnInfo) SetLastActive(t time.Time) {
 }
 
 type Forwarder struct {
-	listenAddr         string
-	wsDialer           *Dialer
-	udpConns           rwmap.RWMap[string, *udpConnInfo]
-	tcpListener        net.Listener
-	udpConn            *net.UDPConn
-	onListened         chan struct{}
-	onListenCloseOnce  sync.Once
-	shutdowned         chan struct{}
-	listenErr          error
-	disableTCP         bool
-	disableUDP         bool
-	udpPool            *ants.Pool
-	useSharedUDPPool   bool
-	udpPoolSize        int
-	udpPoolPreAlloc    bool
-	bufferSize         int
-	bufferPool         *sync.Pool
-	udpCleanupInterval time.Duration
-	udpIdleTimeout     time.Duration
+	listenAddr             string
+	wsDialer               *Dialer
+	udpConns               rwmap.RWMap[string, *udpConnInfo]
+	tcpListener            net.Listener
+	udpConn                *net.UDPConn
+	onListened             chan struct{}
+	onListenCloseOnce      sync.Once
+	shutdowned             chan struct{}
+	listenErr              error
+	disableTCP             bool
+	disableUDP             bool
+	udpPool                *ants.Pool
+	useSharedUDPPool       bool
+	udpPoolSize            int
+	udpPoolPreAlloc        bool
+	bufferSize             int
+	bufferPool             *sync.Pool
+	udpCleanupInterval     time.Duration
+	udpIdleTimeout         time.Duration
+	disableUdpEarlyData    bool
+	udpEarlyDataHeaderName string
+	udpMaxEarlyDataSize    int
 }
 
 type ForwarderOption func(*Forwarder)
@@ -199,6 +265,24 @@ func WithUDPIdleTimeout(timeout time.Duration) ForwarderOption {
 	}
 }
 
+func WithDisableUdpEarlyData() ForwarderOption {
+	return func(f *Forwarder) {
+		f.disableUdpEarlyData = true
+	}
+}
+
+func WithUdpEarlyDataHeaderName(name string) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpEarlyDataHeaderName = name
+	}
+}
+
+func WithMaxEarlyDataSize(size int) ForwarderOption {
+	return func(f *Forwarder) {
+		f.udpMaxEarlyDataSize = size
+	}
+}
+
 func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) *Forwarder {
 	wf := &Forwarder{
 		listenAddr: listenAddr,
@@ -217,6 +301,12 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	}
 	if wf.udpIdleTimeout == 0 {
 		wf.udpIdleTimeout = DefaultUDPIdleTimeout
+	}
+	if wf.udpEarlyDataHeaderName == "" {
+		wf.udpEarlyDataHeaderName = DefaultUdpEarlyDataHeaderName
+	}
+	if wf.udpMaxEarlyDataSize == 0 {
+		wf.udpMaxEarlyDataSize = DefaultUdpMaxEarlyDataSize
 	}
 	wf.bufferPool = newBufferPool(wf.bufferSize)
 	return wf
@@ -351,6 +441,10 @@ func (wf *Forwarder) Serve() (err error) {
 
 	wf.closeOnListened()
 
+	return wf.serve()
+}
+
+func (wf *Forwarder) serve() error {
 	if !wf.disableTCP && !wf.disableUDP {
 		go func() {
 			for {
@@ -466,12 +560,22 @@ func (wf *Forwarder) processUDP() error {
 		connInfo.dialer = wf.wsDialer
 		value, loaded := wf.udpConns.LoadOrStore(key, connInfo)
 		if !loaded {
-			if _, err := value.Setup(); err != nil {
-				color.Red("Failed to setup new UDP in websocket connection: %v", err)
-				wf.udpConns.CompareAndDelete(key, value)
+			if !wf.disableUdpEarlyData && n <= wf.udpMaxEarlyDataSize {
+				if _, err := value.SetupWithEarlyData((*buffer)[:n], wf.udpEarlyDataHeaderName); err != nil {
+					color.Red("Failed to setup new UDP in websocket connection: %v", err)
+					wf.udpConns.CompareAndDelete(key, value)
+					return
+				}
+				go wf.handleUDPResponse(value, remoteAddr)
 				return
+			} else {
+				if _, err := value.Setup(); err != nil {
+					color.Red("Failed to setup new UDP in websocket connection: %v", err)
+					wf.udpConns.CompareAndDelete(key, value)
+					return
+				}
+				go wf.handleUDPResponse(value, remoteAddr)
 			}
-			go wf.handleUDPResponse(value, remoteAddr)
 		} else {
 			connInfo.dialer = nil
 			putUDPConnInfo(connInfo)
@@ -521,7 +625,11 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			return
 		}
 
-		wf.udpConn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
+		err = wf.udpConn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
+		if err != nil {
+			color.Red("Failed to set write deadline: %v", err)
+			return
+		}
 		_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {

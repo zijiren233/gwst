@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,13 @@ type ConnectAddrConfig struct {
 	FallbackAddrs []string
 }
 
+func (c *ConnectAddrConfig) Clone() *ConnectAddrConfig {
+	return &ConnectAddrConfig{
+		Addr:          c.Addr,
+		FallbackAddrs: slices.Clone(c.FallbackAddrs),
+	}
+}
+
 type ConnectDialConfig struct {
 	splitAddr   string
 	splitPort   string
@@ -50,11 +59,25 @@ type ConnectDialConfig struct {
 	UDP         bool
 	Dialer      *net.Dialer
 	LoadBalance bool
+	Headers     http.Header
+}
+
+func (c *ConnectDialConfig) Clone() *ConnectDialConfig {
+	clone := *c
+	clone.Headers = clone.Headers.Clone()
+	return &clone
 }
 
 type ConnectConfig struct {
 	ConnectAddrConfig
 	ConnectDialConfig
+}
+
+func (c *ConnectConfig) Clone() *ConnectConfig {
+	return &ConnectConfig{
+		ConnectAddrConfig: *c.ConnectAddrConfig.Clone(),
+		ConnectDialConfig: *c.ConnectDialConfig.Clone(),
+	}
 }
 
 type ConnectOption func(*ConnectConfig)
@@ -118,6 +141,24 @@ func WithDialer(dialer *net.Dialer) ConnectOption {
 func WithLoadBalance(loadBalance bool) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.LoadBalance = loadBalance
+	}
+}
+
+func WithAppendHeaders(headers http.Header) ConnectOption {
+	return func(c *ConnectConfig) {
+		if c.Headers == nil {
+			c.Headers = headers
+		} else {
+			for k, v := range headers {
+				c.Headers[k] = v
+			}
+		}
+	}
+}
+
+func WithHeaders(headers http.Header) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Headers = headers
 	}
 }
 
@@ -332,12 +373,12 @@ func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
-	setReqHeader(ws_config, cfg.UDP, cfg.Target, cfg.NamedTarget)
+	setReqHeader(ws_config, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers)
 	ws_config.Dialer = cfg.Dialer
 	return ws_config, nil
 }
 
-func setReqHeader(ws_config *websocket.Config, isUdp bool, target string, namedTarget string) {
+func setReqHeader(ws_config *websocket.Config, isUdp bool, target string, namedTarget string, headers http.Header) {
 	ws_config.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
 	if target != "" {
 		ws_config.Header.Set("X-Target", target)
@@ -347,6 +388,9 @@ func setReqHeader(ws_config *websocket.Config, isUdp bool, target string, namedT
 	}
 	if isUdp {
 		ws_config.Header.Set("X-Protocol", "udp")
+	}
+	for k, v := range headers {
+		ws_config.Header[k] = v
 	}
 }
 
@@ -403,28 +447,31 @@ func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
 	return wc
 }
 
-func (wc *Dialer) DialContext(ctx context.Context, network string) (net.Conn, error) {
-	cfg := wc.config
+func (wc *Dialer) DialContext(ctx context.Context, network string, options ...ConnectOption) (net.Conn, error) {
+	cfg := wc.config.Clone()
 	cfg.UDP = strings.HasPrefix(network, "udp")
-	return ConnectWithConfig(ctx, cfg)
+	for _, option := range options {
+		option(cfg)
+	}
+	return ConnectWithConfig(ctx, *cfg)
 }
 
-func (wc *Dialer) Dial(network string) (net.Conn, error) {
-	return wc.DialContext(context.Background(), network)
+func (wc *Dialer) Dial(network string, options ...ConnectOption) (net.Conn, error) {
+	return wc.DialContext(context.Background(), network, options...)
 }
 
-func (wc *Dialer) DialUDP() (net.Conn, error) {
-	return wc.Dial("udp")
+func (wc *Dialer) DialUDP(options ...ConnectOption) (net.Conn, error) {
+	return wc.Dial("udp", options...)
 }
 
-func (wc *Dialer) DialContextUDP(ctx context.Context) (net.Conn, error) {
-	return wc.DialContext(ctx, "udp")
+func (wc *Dialer) DialContextUDP(ctx context.Context, options ...ConnectOption) (net.Conn, error) {
+	return wc.DialContext(ctx, "udp", options...)
 }
 
-func (wc *Dialer) DialTCP() (net.Conn, error) {
-	return wc.Dial("tcp")
+func (wc *Dialer) DialTCP(options ...ConnectOption) (net.Conn, error) {
+	return wc.Dial("tcp", options...)
 }
 
-func (wc *Dialer) DialContextTCP(ctx context.Context) (net.Conn, error) {
-	return wc.DialContext(ctx, "tcp")
+func (wc *Dialer) DialContextTCP(ctx context.Context, options ...ConnectOption) (net.Conn, error) {
+	return wc.DialContext(ctx, "tcp", options...)
 }
