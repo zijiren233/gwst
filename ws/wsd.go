@@ -322,11 +322,11 @@ func connect(ctx context.Context, cfg *ConnectDialConfig) (*websocket.Conn, erro
 func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 	var server, origin string
 	if cfg.TLS {
-		server = fmt.Sprintf("wss://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
-		origin = fmt.Sprintf("https://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
+		server = fmt.Sprintf("wss://%s%s", cfg.Host, cfg.Path)
+		origin = fmt.Sprintf("https://%s%s", cfg.Host, cfg.Path)
 	} else {
-		server = fmt.Sprintf("ws://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
-		origin = fmt.Sprintf("http://%s:%s%s", cfg.splitAddr, cfg.splitPort, cfg.Path)
+		server = fmt.Sprintf("ws://%s%s", cfg.Host, cfg.Path)
+		origin = fmt.Sprintf("http://%s%s", cfg.Host, cfg.Path)
 	}
 	ws_config, err := websocket.NewConfig(server, origin)
 	if err != nil {
