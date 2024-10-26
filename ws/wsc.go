@@ -209,7 +209,7 @@ type Forwarder struct {
 	bufferPool             *sync.Pool
 	udpCleanupInterval     time.Duration
 	udpIdleTimeout         time.Duration
-	disableUdpEarlyData    bool
+	enableUdpEarlyData     bool
 	udpEarlyDataHeaderName string
 	udpMaxEarlyDataSize    int
 }
@@ -265,9 +265,9 @@ func WithUDPIdleTimeout(timeout time.Duration) ForwarderOption {
 	}
 }
 
-func WithDisableUdpEarlyData() ForwarderOption {
+func WithEnableUdpEarlyData() ForwarderOption {
 	return func(f *Forwarder) {
-		f.disableUdpEarlyData = true
+		f.enableUdpEarlyData = true
 	}
 }
 
@@ -560,7 +560,7 @@ func (wf *Forwarder) processUDP() error {
 		connInfo.dialer = wf.wsDialer
 		value, loaded := wf.udpConns.LoadOrStore(key, connInfo)
 		if !loaded {
-			if !wf.disableUdpEarlyData && n <= wf.udpMaxEarlyDataSize {
+			if wf.enableUdpEarlyData && n <= wf.udpMaxEarlyDataSize {
 				if _, err := value.SetupWithEarlyData((*buffer)[:n], wf.udpEarlyDataHeaderName); err != nil {
 					color.Red("Failed to setup new UDP in websocket connection: %v", err)
 					wf.udpConns.CompareAndDelete(key, value)
