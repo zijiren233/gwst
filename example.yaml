@@ -21,6 +21,7 @@
   tls: true
   server_name: "www.microsoft.com"
   insecure: true
+  enable_udp_early_data: true
 
 # Another server configuration (without TLS)
 - is_client: false
