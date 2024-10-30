@@ -47,19 +47,23 @@ func (c *ConnectAddrConfig) Clone() *ConnectAddrConfig {
 }
 
 type ConnectDialConfig struct {
-	splitAddr   string
-	splitPort   string
+	Dialer      *net.Dialer
+	Headers     http.Header
 	Host        string
 	Path        string
 	Target      string
 	NamedTarget string
-	TLS         bool
 	ServerName  string
+	TLS         bool
 	Insecure    bool
 	UDP         bool
-	Dialer      *net.Dialer
 	LoadBalance bool
-	Headers     http.Header
+}
+
+type splitedConnectDialConfig struct {
+	*ConnectDialConfig
+	splitAddr string
+	splitPort string
 }
 
 func (c *ConnectDialConfig) Clone() *ConnectDialConfig {
@@ -224,7 +228,7 @@ func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
 	return allAddrs[0], allAddrs[1:]
 }
 
-func connectConcurrent(ctx context.Context, cfg *ConnectDialConfig, addrs []string) (*websocket.Conn, error) {
+func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs []string) (*websocket.Conn, error) {
 	type result struct {
 		conn *websocket.Conn
 		err  error
@@ -240,7 +244,7 @@ func connectConcurrent(ctx context.Context, cfg *ConnectDialConfig, addrs []stri
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
-			dialCfgCopy, err := generateDialConfig(addr, *cfg)
+			dialCfgCopy, err := generateDialConfig(addr, *cfg.ConnectDialConfig)
 			if err != nil {
 				results <- result{nil, err}
 				return
@@ -272,7 +276,7 @@ func connectConcurrent(ctx context.Context, cfg *ConnectDialConfig, addrs []stri
 	return nil, errors.Join(errs...)
 }
 
-func generateDialConfig(addr string, cfg ConnectDialConfig) (*ConnectDialConfig, error) {
+func generateDialConfig(addr string, cfg ConnectDialConfig) (*splitedConnectDialConfig, error) {
 	if cfg.Dialer == nil {
 		cfg.Dialer = defaultDialer
 	}
@@ -281,8 +285,11 @@ func generateDialConfig(addr string, cfg ConnectDialConfig) (*ConnectDialConfig,
 	if err != nil {
 		return nil, err
 	}
-	cfg.splitAddr = addr
-	cfg.splitPort = port
+	splitCfg := splitedConnectDialConfig{
+		splitAddr:         addr,
+		splitPort:         port,
+		ConnectDialConfig: &cfg,
+	}
 
 	if cfg.Host == "" {
 		if cfg.ServerName != "" {
@@ -298,7 +305,7 @@ func generateDialConfig(addr string, cfg ConnectDialConfig) (*ConnectDialConfig,
 
 	cfg.Path = ensureLeadingSlash(cfg.Path)
 
-	return &cfg, nil
+	return &splitCfg, nil
 }
 
 func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
@@ -327,8 +334,8 @@ func ensureLeadingSlash(path string) string {
 	return path
 }
 
-func connect(ctx context.Context, cfg *ConnectDialConfig) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig(cfg)
+func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Conn, error) {
+	ws_config, err := createWebsocketConfig(cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +351,8 @@ func connect(ctx context.Context, cfg *ConnectDialConfig) (*websocket.Conn, erro
 			ServerName:         cfg.ServerName,
 		}
 
-		tlsConn, err := createTLSClient(dialConn, config)
+		var tlsConn *tls.UConn
+		tlsConn, err = createTLSClient(dialConn, config)
 		if err != nil {
 			dialConn.Close()
 			return nil, err

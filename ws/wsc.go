@@ -61,13 +61,13 @@ func newBufferPool(size int) *sync.Pool {
 
 type udpConnInfo struct {
 	net.Conn
-	dialLock      sync.Mutex
 	dialErr       error
 	dialer        *Dialer
-	lastActive    atomic.Int64
-	closed        bool
 	setUpDone     chan struct{}
+	lastActive    atomic.Int64
 	setUpDoneOnce sync.Once
+	dialLock      sync.Mutex
+	closed        bool
 }
 
 func (u *udpConnInfo) Close() error {
@@ -190,28 +190,28 @@ func (u *udpConnInfo) SetLastActive(t time.Time) {
 }
 
 type Forwarder struct {
-	listenAddr             string
-	wsDialer               *Dialer
-	udpConns               rwmap.RWMap[string, *udpConnInfo]
 	tcpListener            net.Listener
+	listenErr              error
+	udpPool                *ants.Pool
+	wsDialer               *Dialer
 	udpConn                *net.UDPConn
 	onListened             chan struct{}
-	onListenCloseOnce      sync.Once
 	shutdowned             chan struct{}
-	listenErr              error
-	disableTCP             bool
-	disableUDP             bool
-	udpPool                *ants.Pool
-	useSharedUDPPool       bool
-	udpPoolSize            int
-	udpPoolPreAlloc        bool
-	bufferSize             int
 	bufferPool             *sync.Pool
+	udpEarlyDataHeaderName string
+	listenAddr             string
+	udpConns               rwmap.RWMap[string, *udpConnInfo]
+	bufferSize             int
+	udpPoolSize            int
 	udpCleanupInterval     time.Duration
 	udpIdleTimeout         time.Duration
-	disableUdpEarlyData    bool
-	udpEarlyDataHeaderName string
 	udpMaxEarlyDataSize    int
+	onListenCloseOnce      sync.Once
+	useSharedUDPPool       bool
+	udpPoolPreAlloc        bool
+	disableUDP             bool
+	disableTCP             bool
+	disableUdpEarlyData    bool
 }
 
 type ForwarderOption func(*Forwarder)

@@ -3,10 +3,10 @@ module github.com/zijiren233/gwst
 go 1.22.0
 
 require (
-	github.com/fatih/color v1.17.0
+	github.com/fatih/color v1.18.0
 	github.com/panjf2000/ants/v2 v2.10.0
 	github.com/refraction-networking/utls v1.6.7
-	github.com/zijiren233/gencontainer v0.0.0-20241008162312-0d000427d9f5
+	github.com/zijiren233/gencontainer v0.0.0-20241030052007-1f7025eb92f5
 	golang.org/x/net v0.30.0
 	gopkg.in/yaml.v3 v3.0.1
 )

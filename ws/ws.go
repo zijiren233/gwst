@@ -29,35 +29,30 @@ type NamedTarget struct {
 }
 
 type Server struct {
-	listenAddr     string
-	loadBalance    bool
-	targetAddr     string
-	fallbackAddrs  []string
-	allowedTargets map[string][]string
-	namedTargets   map[string]NamedTarget
-	path           string
-
-	tls                   bool
-	serverName            string
-	certFile              string
-	keyFile               string
-	selfSignedCertOptions []selfSignedCertOption
-	GetCertificate        func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-
-	server *http.Server
-
-	onListened        chan struct{}
-	shutdowned        chan struct{}
-	listenErr         error
-	onListenCloseOnce sync.Once
-
-	bufferSize int
-	bufferPool *sync.Pool
-
+	listenErr              error
+	GetCertificate         func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	bufferPool             *sync.Pool
+	shutdowned             chan struct{}
+	allowedTargets         map[string][]string
+	namedTargets           map[string]NamedTarget
+	onListened             chan struct{}
+	server                 *http.Server
+	path                   string
+	certFile               string
+	keyFile                string
+	udpEarlyDataHeaderName string
+	serverName             string
+	targetAddr             string
+	listenAddr             string
+	fallbackAddrs          []string
+	selfSignedCertOptions  []selfSignedCertOption
+	bufferSize             int
+	udpDialReadTimeout     time.Duration
+	onListenCloseOnce      sync.Once
+	tls                    bool
+	loadBalance            bool
 	disableTcpProtocol     bool
 	disableUdpProtocol     bool
-	udpDialReadTimeout     time.Duration
-	udpEarlyDataHeaderName string
 }
 
 type WsServerOption func(*Server)
