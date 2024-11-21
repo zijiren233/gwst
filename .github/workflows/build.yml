@@ -26,6 +26,8 @@ jobs:
 
       - name: Go Build
         uses: zijiren233/go-build-action@v1
+        env:
+          MICRO_ARM64_DISABLED: true
         with:
           targets: ${{ matrix.targets }}
           disable-cgo: true
