@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -211,7 +212,7 @@ type Forwarder struct {
 	udpPoolPreAlloc        bool
 	disableUDP             bool
 	disableTCP             bool
-	disableUdpEarlyData    bool
+	disableUDPEarlyData    bool
 }
 
 type ForwarderOption func(*Forwarder)
@@ -265,13 +266,13 @@ func WithUDPIdleTimeout(timeout time.Duration) ForwarderOption {
 	}
 }
 
-func WithDisableUdpEarlyData() ForwarderOption {
+func WithDisableUDPEarlyData() ForwarderOption {
 	return func(f *Forwarder) {
-		f.disableUdpEarlyData = true
+		f.disableUDPEarlyData = true
 	}
 }
 
-func WithUdpEarlyDataHeaderName(name string) ForwarderOption {
+func WithUDPEarlyDataHeaderName(name string) ForwarderOption {
 	return func(f *Forwarder) {
 		f.udpEarlyDataHeaderName = name
 	}
@@ -303,10 +304,10 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 		wf.udpIdleTimeout = DefaultUDPIdleTimeout
 	}
 	if wf.udpEarlyDataHeaderName == "" {
-		wf.udpEarlyDataHeaderName = DefaultUdpEarlyDataHeaderName
+		wf.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
 	if wf.udpMaxEarlyDataSize == 0 {
-		wf.udpMaxEarlyDataSize = DefaultUdpMaxEarlyDataSize
+		wf.udpMaxEarlyDataSize = DefaultUDPMaxEarlyDataSize
 	}
 	wf.bufferPool = newBufferPool(wf.bufferSize)
 	return wf
@@ -380,12 +381,14 @@ func (wf *Forwarder) ShutdownedBool() bool {
 	}
 }
 
+var ErrBothTCPAndUDPDisabled = errors.New("both TCP and UDP are disabled")
+
 func (wf *Forwarder) Serve() (err error) {
 	defer wf.closeOnListened()
 	defer close(wf.shutdowned)
 
 	if wf.disableTCP && wf.disableUDP {
-		return fmt.Errorf("both TCP and UDP are disabled")
+		return ErrBothTCPAndUDPDisabled
 	}
 
 	if !wf.disableTCP {
@@ -446,14 +449,21 @@ func (wf *Forwarder) Serve() (err error) {
 
 func (wf *Forwarder) serve() error {
 	if !wf.disableTCP && !wf.disableUDP {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		go func() {
 			for {
-				err := wf.processUDP()
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						return
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					err := wf.processUDP()
+					if err != nil {
+						if errors.Is(err, net.ErrClosed) {
+							return
+						}
+						color.Red("Failed to process UDP: %v", err)
 					}
-					color.Red("Failed to process UDP: %v", err)
 				}
 			}
 		}()
@@ -461,7 +471,7 @@ func (wf *Forwarder) serve() error {
 			conn, err := wf.tcpListener.Accept()
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
-					return nil
+					return err
 				}
 				color.Red("Failed to accept TCP connection: %v", err)
 				continue
@@ -473,7 +483,7 @@ func (wf *Forwarder) serve() error {
 			conn, err := wf.tcpListener.Accept()
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
-					return nil
+					return err
 				}
 				color.Red("Failed to accept TCP connection: %v", err)
 				continue
@@ -485,7 +495,7 @@ func (wf *Forwarder) serve() error {
 			err := wf.processUDP()
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
-					return nil
+					return err
 				}
 				color.Red("Failed to process UDP: %v", err)
 			}
@@ -560,7 +570,7 @@ func (wf *Forwarder) processUDP() error {
 		connInfo.dialer = wf.wsDialer
 		value, loaded := wf.udpConns.LoadOrStore(key, connInfo)
 		if !loaded {
-			if !wf.disableUdpEarlyData && n <= wf.udpMaxEarlyDataSize {
+			if !wf.disableUDPEarlyData && n <= wf.udpMaxEarlyDataSize {
 				if _, err := value.SetupWithEarlyData((*buffer)[:n], wf.udpEarlyDataHeaderName); err != nil {
 					color.Red("Failed to setup new UDP in websocket connection: %v", err)
 					wf.udpConns.CompareAndDelete(key, value)
@@ -568,14 +578,13 @@ func (wf *Forwarder) processUDP() error {
 				}
 				go wf.handleUDPResponse(value, remoteAddr)
 				return
-			} else {
-				if _, err := value.Setup(); err != nil {
-					color.Red("Failed to setup new UDP in websocket connection: %v", err)
-					wf.udpConns.CompareAndDelete(key, value)
-					return
-				}
-				go wf.handleUDPResponse(value, remoteAddr)
 			}
+			if _, err := value.Setup(); err != nil {
+				color.Red("Failed to setup new UDP in websocket connection: %v", err)
+				wf.udpConns.CompareAndDelete(key, value)
+				return
+			}
+			go wf.handleUDPResponse(value, remoteAddr)
 		} else {
 			connInfo.dialer = nil
 			putUDPConnInfo(connInfo)
@@ -595,7 +604,7 @@ func (wf *Forwarder) processUDP() error {
 	})
 	if err != nil {
 		wf.putBuffer(buffer)
-		if err == ants.ErrPoolOverload {
+		if errors.Is(err, ants.ErrPoolOverload) {
 			color.Red("UDP pool is overloaded, dropping packet: %v", remoteAddr.String())
 		} else {
 			color.Red("Failed to submit UDP task: %v", err)
@@ -619,7 +628,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				color.Red("Failed to read from WebSocket: %v", err)
 			}
 			return

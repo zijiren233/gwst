@@ -19,8 +19,8 @@ import (
 
 const (
 	DefaultUDPDialReadTimeout     = time.Second / 2
-	DefaultUdpEarlyDataHeaderName = "Sec-WebSocket-Protocol"
-	DefaultUdpMaxEarlyDataSize    = 4 * 1024
+	DefaultUDPEarlyDataHeaderName = "Sec-WebSocket-Protocol"
+	DefaultUDPMaxEarlyDataSize    = 4 * 1024
 )
 
 type NamedTarget struct {
@@ -45,34 +45,40 @@ type Server struct {
 	targetAddr             string
 	listenAddr             string
 	fallbackAddrs          []string
-	selfSignedCertOptions  []selfSignedCertOption
+	selfSignedCertOptions  []SelfSignedCertOption
 	bufferSize             int
 	udpDialReadTimeout     time.Duration
 	onListenCloseOnce      sync.Once
 	tls                    bool
 	loadBalance            bool
-	disableTcpProtocol     bool
-	disableUdpProtocol     bool
+	disableTCPProtocol     bool
+	disableUDPProtocol     bool
 }
 
-type WsServerOption func(*Server)
+type ServerOption func(*Server)
 
-func WithServerFallbackAddrs(fallbackAddrs []string) WsServerOption {
+func WithServerFallbackAddrs(fallbackAddrs []string) ServerOption {
 	return func(ps *Server) {
 		ps.fallbackAddrs = fallbackAddrs
 	}
 }
 
-func WithTLS(certFile, keyFile, serverName string) WsServerOption {
+func WithTLS(certFile, keyFile, serverName string) ServerOption {
 	return func(ps *Server) {
 		ps.tls = true
 		ps.certFile = certFile
 		ps.keyFile = keyFile
+		WithServerServerName(serverName)(ps)
+	}
+}
+
+func WithServerServerName(serverName string) ServerOption {
+	return func(ps *Server) {
 		ps.serverName = serverName
 	}
 }
 
-func WithAllowedTargets(allowedTargets map[string][]string) WsServerOption {
+func WithAllowedTargets(allowedTargets map[string][]string) ServerOption {
 	return func(ps *Server) {
 		if len(allowedTargets) > 0 {
 			ps.allowedTargets = allowedTargets
@@ -80,62 +86,62 @@ func WithAllowedTargets(allowedTargets map[string][]string) WsServerOption {
 	}
 }
 
-func WithNamedTargets(namedTargets map[string]NamedTarget) WsServerOption {
+func WithNamedTargets(namedTargets map[string]NamedTarget) ServerOption {
 	return func(ps *Server) {
 		ps.namedTargets = namedTargets
 	}
 }
 
-func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) WsServerOption {
+func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) ServerOption {
 	return func(ps *Server) {
 		ps.tls = true
 		ps.GetCertificate = getCertificate
 	}
 }
 
-func WithServerBufferSize(size int) WsServerOption {
+func WithServerBufferSize(size int) ServerOption {
 	return func(ps *Server) {
 		ps.bufferSize = size
 	}
 }
 
-func WithSelfSignedCert(opts ...selfSignedCertOption) WsServerOption {
+func WithSelfSignedCert(opts ...SelfSignedCertOption) ServerOption {
 	return func(ps *Server) {
 		ps.selfSignedCertOptions = opts
 	}
 }
 
-func WithServerLoadBalance(loadBalance bool) WsServerOption {
+func WithServerLoadBalance(loadBalance bool) ServerOption {
 	return func(ps *Server) {
 		ps.loadBalance = loadBalance
 	}
 }
 
-func WithServerUDPDialReadTimeout(timeout time.Duration) WsServerOption {
+func WithServerUDPDialReadTimeout(timeout time.Duration) ServerOption {
 	return func(ps *Server) {
 		ps.udpDialReadTimeout = timeout
 	}
 }
 
-func WithServerDisableTcpProtocol(disable bool) WsServerOption {
+func WithServerDisableTCPProtocol(disable bool) ServerOption {
 	return func(ps *Server) {
-		ps.disableTcpProtocol = disable
+		ps.disableTCPProtocol = disable
 	}
 }
 
-func WithServerDisableUdpProtocol(disable bool) WsServerOption {
+func WithServerDisableUDPProtocol(disable bool) ServerOption {
 	return func(ps *Server) {
-		ps.disableUdpProtocol = disable
+		ps.disableUDPProtocol = disable
 	}
 }
 
-func WithServerUdpEarlyDataHeaderName(name string) WsServerOption {
+func WithServerUDPEarlyDataHeaderName(name string) ServerOption {
 	return func(ps *Server) {
 		ps.udpEarlyDataHeaderName = name
 	}
 }
 
-func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Server {
+func NewServer(listenAddr, targetAddr, path string, opts ...ServerOption) *Server {
 	ps := &Server{
 		listenAddr: listenAddr,
 		targetAddr: targetAddr,
@@ -157,7 +163,7 @@ func NewServer(listenAddr, targetAddr, path string, opts ...WsServerOption) *Ser
 		ps.udpDialReadTimeout = DefaultUDPDialReadTimeout
 	}
 	if ps.udpEarlyDataHeaderName == "" {
-		ps.udpEarlyDataHeaderName = DefaultUdpEarlyDataHeaderName
+		ps.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
 
 	mux := http.NewServeMux()
@@ -211,7 +217,7 @@ func (ps *Server) ShutdownedBool() bool {
 }
 
 func (ps *Server) Serve() error {
-	if ps.disableTcpProtocol && ps.disableUdpProtocol {
+	if ps.disableTCPProtocol && ps.disableUDPProtocol {
 		return errors.New("both TCP and UDP protocols are disabled")
 	}
 
@@ -222,15 +228,18 @@ func (ps *Server) Serve() error {
 		if ps.GetCertificate != nil {
 			ps.server.TLSConfig = &tls.Config{
 				GetCertificate: ps.GetCertificate,
+				ServerName:     ps.serverName,
+				MinVersion:     tls.VersionTLS13,
 			}
 		} else if ps.certFile == "" && ps.keyFile == "" {
 			cert, err := GenerateSelfSignedCert(ps.serverName, ps.selfSignedCertOptions...)
 			if err != nil {
-				return fmt.Errorf("failed to generate self-signed certificate: %v", err)
+				return fmt.Errorf("failed to generate self-signed certificate: %w", err)
 			}
 			ps.server.TLSConfig = &tls.Config{
 				Certificates: []tls.Certificate{cert},
 				ServerName:   ps.serverName,
+				MinVersion:   tls.VersionTLS13,
 			}
 		}
 		return ps.listenAndServeTLS(ps.certFile, ps.keyFile)
@@ -284,11 +293,11 @@ func (ps *Server) handleWebSocket(ws *websocket.Conn) {
 	ws.PayloadType = websocket.BinaryFrame
 
 	protocol := getProtocol(ws.Request().Header.Get("X-Protocol"))
-	if ps.disableTcpProtocol && protocol == "tcp" {
+	if ps.disableTCPProtocol && protocol == "tcp" {
 		color.Red("TCP protocol is disabled")
 		return
 	}
-	if ps.disableUdpProtocol && protocol == "udp" {
+	if ps.disableUDPProtocol && protocol == "udp" {
 		color.Red("UDP protocol is disabled")
 		return
 	}
@@ -391,7 +400,7 @@ func (ps *Server) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 		}
 	}
 
-	readBuffer, rn, conn, err := ps.dialUdp(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
+	readBuffer, rn, conn, err := ps.dialUDP(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
 	if err != nil {
 		ps.putBuffer(readBuffer)
 		color.Red("Failed to connect to UDP target: %v\n", err)
@@ -461,8 +470,8 @@ func dial(_ context.Context, network, addr string, fallbackAddrs []string) (net.
 	return nil, errors.Join(errs...)
 }
 
-func (ps *Server) dialUdp(ctx context.Context, earlyData []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
-	buffer, rn, conn, err := ps.dialAndCheckUdp(ctx, earlyData, addr)
+func (ps *Server) dialUDP(ctx context.Context, earlyData []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
+	buffer, rn, conn, err := ps.dialAndCheckUDP(ctx, earlyData, addr)
 	if err == nil {
 		return buffer, rn, conn, nil
 	}
@@ -473,7 +482,7 @@ func (ps *Server) dialUdp(ctx context.Context, earlyData []byte, addr string, fa
 
 	errs := []error{err}
 	for _, addr := range fallbackAddrs {
-		buffer, rn, conn, batchErr := ps.dialAndCheckUdp(ctx, earlyData, addr)
+		buffer, rn, conn, batchErr := ps.dialAndCheckUDP(ctx, earlyData, addr)
 		if batchErr == nil {
 			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
 			return buffer, rn, conn, nil
@@ -483,7 +492,7 @@ func (ps *Server) dialUdp(ctx context.Context, earlyData []byte, addr string, fa
 	return nil, 0, nil, errors.Join(errs...)
 }
 
-func (ps *Server) dialAndCheckUdp(_ context.Context, earlyData []byte, addr string) (*[]byte, int, net.Conn, error) {
+func (ps *Server) dialAndCheckUDP(_ context.Context, earlyData []byte, addr string) (*[]byte, int, net.Conn, error) {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		return nil, 0, nil, err

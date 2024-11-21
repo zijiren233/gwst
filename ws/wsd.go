@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"slices"
@@ -27,7 +27,7 @@ func init() {
 		tls.HelloSafari_Auto,
 		tls.HelloIOS_Auto,
 	}
-	randomFingerprint = modernFingerprints[rand.Intn(len(modernFingerprints))]
+	randomFingerprint = modernFingerprints[rand.IntN(len(modernFingerprints))]
 }
 
 var defaultDialer = &net.Dialer{
@@ -335,7 +335,7 @@ func ensureLeadingSlash(path string) string {
 }
 
 func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Conn, error) {
-	ws_config, err := createWebsocketConfig(cfg.ConnectDialConfig)
+	wsConfig, err := createWebsocketConfig(cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +349,7 @@ func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Con
 		config := &tls.Config{
 			InsecureSkipVerify: cfg.Insecure,
 			ServerName:         cfg.ServerName,
+			MinVersion:         tls.VersionTLS13,
 		}
 
 		var tlsConn *tls.UConn
@@ -360,7 +361,7 @@ func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Con
 		dialConn = tlsConn
 	}
 
-	ws, err := websocket.NewClient(ws_config, dialConn)
+	ws, err := websocket.NewClient(wsConfig, dialConn)
 	if err != nil {
 		dialConn.Close()
 		return nil, err
@@ -377,28 +378,28 @@ func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 		server = fmt.Sprintf("ws://%s%s", cfg.Host, cfg.Path)
 		origin = fmt.Sprintf("http://%s%s", cfg.Host, cfg.Path)
 	}
-	ws_config, err := websocket.NewConfig(server, origin)
+	wsConfig, err := websocket.NewConfig(server, origin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
-	setReqHeader(ws_config, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers)
-	ws_config.Dialer = cfg.Dialer
-	return ws_config, nil
+	setReqHeader(wsConfig, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers)
+	wsConfig.Dialer = cfg.Dialer
+	return wsConfig, nil
 }
 
-func setReqHeader(ws_config *websocket.Config, isUdp bool, target string, namedTarget string, headers http.Header) {
-	ws_config.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
+func setReqHeader(wsConfig *websocket.Config, isUDP bool, target string, namedTarget string, headers http.Header) {
+	wsConfig.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
 	if target != "" {
-		ws_config.Header.Set("X-Target", target)
+		wsConfig.Header.Set("X-Target", target)
 	}
 	if namedTarget != "" {
-		ws_config.Header.Set("X-Named-Target", namedTarget)
+		wsConfig.Header.Set("X-Named-Target", namedTarget)
 	}
-	if isUdp {
-		ws_config.Header.Set("X-Protocol", "udp")
+	if isUDP {
+		wsConfig.Header.Set("X-Protocol", "udp")
 	}
 	for k, v := range headers {
-		ws_config.Header[k] = v
+		wsConfig.Header[k] = v
 	}
 }
 

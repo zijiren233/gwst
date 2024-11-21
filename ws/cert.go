@@ -20,21 +20,21 @@ type selfSignedCertConfig struct {
 	ecc bool
 }
 
-type selfSignedCertOption func(*selfSignedCertConfig)
+type SelfSignedCertOption func(*selfSignedCertConfig)
 
-func WithECC() selfSignedCertOption {
+func WithECC() SelfSignedCertOption {
 	return func(cfg *selfSignedCertConfig) {
 		cfg.ecc = true
 	}
 }
 
-func WithRSA() selfSignedCertOption {
+func WithRSA() SelfSignedCertOption {
 	return func(cfg *selfSignedCertConfig) {
 		cfg.ecc = false
 	}
 }
 
-func GenerateSelfSignedCert(host string, opts ...selfSignedCertOption) (tls.Certificate, error) {
+func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (tls.Certificate, error) {
 	cfg := &selfSignedCertConfig{}
 	for _, opt := range opts {
 		opt(cfg)

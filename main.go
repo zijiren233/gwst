@@ -33,8 +33,10 @@ type Endpoint struct {
 	Insecure            bool                      `yaml:"insecure"`
 	DisableTCP          bool                      `yaml:"disable_tcp"`
 	DisableUDP          bool                      `yaml:"disable_udp"`
-	DisableUdpEarlyData bool                      `yaml:"disable_udp_early_data"`
+	DisableUDPEarlyData bool                      `yaml:"disable_udp_early_data"`
 }
+
+type Endpoints []Endpoint
 
 func main() {
 	if len(os.Args) < 2 {
@@ -49,7 +51,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	var endpoints []Endpoint
+	var endpoints Endpoints
 	err = yaml.Unmarshal(yamlFile, &endpoints)
 	if err != nil {
 		color.Red("Error parsing YAML file: %v", err)
@@ -146,7 +148,7 @@ func printServerInfo(config Endpoint) {
 }
 
 func newServer(config Endpoint) *ws.Server {
-	var opts []ws.WsServerOption = []ws.WsServerOption{
+	var opts []ws.ServerOption = []ws.ServerOption{
 		ws.WithAllowedTargets(config.AllowedTargets),
 		ws.WithNamedTargets(config.NamedTargets),
 		ws.WithServerFallbackAddrs(config.FallbackAddrs),
@@ -177,8 +179,8 @@ func newClient(config Endpoint) *ws.Forwarder {
 	if config.DisableUDP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDP())
 	}
-	if config.DisableUdpEarlyData {
-		forwarderOpts = append(forwarderOpts, ws.WithDisableUdpEarlyData())
+	if config.DisableUDPEarlyData {
+		forwarderOpts = append(forwarderOpts, ws.WithDisableUDPEarlyData())
 	}
 	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
 	return ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
