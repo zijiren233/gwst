@@ -36,6 +36,7 @@ type Server struct {
 	namedTargets           map[string]NamedTarget
 	onListened             chan struct{}
 	server                 *http.Server
+	wsServer               *websocket.Server
 	tlsConfig              *tls.Config
 	path                   string
 	certFile               string
@@ -143,6 +144,14 @@ func WithServerUDPEarlyDataHeaderName(name string) ServerOption {
 	}
 }
 
+func checkOrigin(config *websocket.Config, req *http.Request) (err error) {
+	config.Origin, err = websocket.Origin(config, req)
+	if err == nil && config.Origin == nil {
+		return errors.New("null origin")
+	}
+	return err
+}
+
 func NewServer(listenAddr, targetAddr, path string, opts ...ServerOption) *Server {
 	ps := &Server{
 		listenAddr: listenAddr,
@@ -166,6 +175,11 @@ func NewServer(listenAddr, targetAddr, path string, opts ...ServerOption) *Serve
 	}
 	if ps.udpEarlyDataHeaderName == "" {
 		ps.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
+	}
+
+	ps.wsServer = &websocket.Server{
+		Handler:   ps.handleWebSocket,
+		Handshake: checkOrigin,
 	}
 
 	return ps
@@ -302,12 +316,8 @@ func (ps *Server) Shutdown(ctx context.Context) error {
 	return ps.server.Shutdown(ctx)
 }
 
-func (ps *Server) HandleWebSocket() http.Handler {
-	return websocket.Handler(ps.handleWebSocket)
-}
-
 func (ps *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	ps.HandleWebSocket().ServeHTTP(w, req)
+	ps.wsServer.ServeHTTP(w, req)
 }
 
 func (ps *Server) handleWebSocket(ws *websocket.Conn) {
