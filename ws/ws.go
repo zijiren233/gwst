@@ -281,10 +281,14 @@ func (ps *Server) listenAndServe() error {
 }
 
 func (ps *Server) Close() error {
-	ps.closeOnListened()
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return ps.server.Shutdown(timeoutCtx)
+	return ps.Shutdown(timeoutCtx)
+}
+
+func (ps *Server) Shutdown(ctx context.Context) error {
+	ps.closeOnListened()
+	return ps.server.Shutdown(ctx)
 }
 
 func (ps *Server) handleWebSocket(ws *websocket.Conn) {
