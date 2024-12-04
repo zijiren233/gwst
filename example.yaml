@@ -1,6 +1,6 @@
 # Server configuration
 - is_client: false
-  listen_addr: ":8080"
+  listen_addr: ":8000"
   target_addr: "localhost:80"
   path: "/ws"
   tls: true

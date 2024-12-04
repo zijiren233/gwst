@@ -30,13 +30,13 @@ type NamedTarget struct {
 
 type Server struct {
 	listenErr              error
-	GetCertificate         func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	bufferPool             *sync.Pool
 	shutdowned             chan struct{}
 	allowedTargets         map[string][]string
 	namedTargets           map[string]NamedTarget
 	onListened             chan struct{}
 	server                 *http.Server
+	tlsConfig              *tls.Config
 	path                   string
 	certFile               string
 	keyFile                string
@@ -92,10 +92,12 @@ func WithNamedTargets(namedTargets map[string]NamedTarget) ServerOption {
 	}
 }
 
-func WithGetCertificate(getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) ServerOption {
+func WithTLSConfig(tlsConfig *tls.Config) ServerOption {
 	return func(ps *Server) {
-		ps.tls = true
-		ps.GetCertificate = getCertificate
+		if tlsConfig != nil {
+			ps.tls = true
+			ps.tlsConfig = tlsConfig
+		}
 	}
 }
 
@@ -166,15 +168,6 @@ func NewServer(listenAddr, targetAddr, path string, opts ...ServerOption) *Serve
 		ps.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle(ps.path, websocket.Handler(ps.handleWebSocket))
-	ps.server = &http.Server{
-		Addr:              ps.listenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: time.Second * 5,
-		MaxHeaderBytes:    16 * 1024,
-	}
-
 	return ps
 }
 
@@ -217,6 +210,8 @@ func (ps *Server) ShutdownedBool() bool {
 }
 
 func (ps *Server) Serve() error {
+	server := ps.Server()
+
 	if ps.disableTCPProtocol && ps.disableUDPProtocol {
 		return errors.New("both TCP and UDP protocols are disabled")
 	}
@@ -225,32 +220,30 @@ func (ps *Server) Serve() error {
 	defer close(ps.shutdowned)
 
 	if ps.tls {
-		if ps.GetCertificate != nil {
-			ps.server.TLSConfig = &tls.Config{
-				GetCertificate: ps.GetCertificate,
-				ServerName:     ps.serverName,
-				MinVersion:     tls.VersionTLS13,
-			}
-		} else if ps.certFile == "" && ps.keyFile == "" {
-			cert, err := GenerateSelfSignedCert(ps.serverName, ps.selfSignedCertOptions...)
-			if err != nil {
-				return fmt.Errorf("failed to generate self-signed certificate: %w", err)
-			}
-			ps.server.TLSConfig = &tls.Config{
-				Certificates: []tls.Certificate{cert},
-				ServerName:   ps.serverName,
-				MinVersion:   tls.VersionTLS13,
-			}
-		}
-		return ps.listenAndServeTLS(ps.certFile, ps.keyFile)
+		return ps.listenAndServeTLS(server)
 	}
-	return ps.listenAndServe()
+	return ps.listenAndServe(server)
 }
 
-func (ps *Server) listenAndServeTLS(certFile, keyFile string) error {
+func (ps *Server) listenAndServeTLS(server *http.Server) error {
 	addr := ps.listenAddr
 	if addr == "" {
 		addr = ":https"
+	}
+
+	if ps.tlsConfig == nil && ps.certFile == "" && ps.keyFile == "" {
+		cert, err := GenerateSelfSignedCert(ps.serverName, ps.selfSignedCertOptions...)
+		if err != nil {
+			return fmt.Errorf("failed to generate self-signed certificate: %w", err)
+		}
+		ps.tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{*cert},
+			MinVersion:   tls.VersionTLS13,
+		}
+	}
+
+	if ps.tlsConfig.ServerName == "" {
+		ps.tlsConfig.ServerName = ps.serverName
 	}
 
 	ln, err := net.Listen("tcp", addr)
@@ -258,14 +251,16 @@ func (ps *Server) listenAndServeTLS(certFile, keyFile string) error {
 		ps.listenErr = err
 		return err
 	}
-
-	ps.closeOnListened()
 	defer ln.Close()
 
-	return ps.server.ServeTLS(ln, certFile, keyFile)
+	ps.closeOnListened()
+
+	server.TLSConfig = ps.tlsConfig
+
+	return server.ServeTLS(ln, ps.certFile, ps.keyFile)
 }
 
-func (ps *Server) listenAndServe() error {
+func (ps *Server) listenAndServe(server *http.Server) error {
 	addr := ps.listenAddr
 	if addr == "" {
 		addr = ":http"
@@ -275,9 +270,25 @@ func (ps *Server) listenAndServe() error {
 		ps.listenErr = err
 		return err
 	}
+	defer ln.Close()
 
 	ps.closeOnListened()
-	return ps.server.Serve(ln)
+
+	return server.Serve(ln)
+}
+
+func (ps *Server) Server() *http.Server {
+	if ps.server == nil {
+		mux := http.NewServeMux()
+		mux.Handle(ps.path, ps)
+		ps.server = &http.Server{
+			Addr:              ps.listenAddr,
+			Handler:           mux,
+			ReadHeaderTimeout: time.Second * 5,
+			MaxHeaderBytes:    16 * 1024,
+		}
+	}
+	return ps.server
 }
 
 func (ps *Server) Close() error {
@@ -289,6 +300,14 @@ func (ps *Server) Close() error {
 func (ps *Server) Shutdown(ctx context.Context) error {
 	ps.closeOnListened()
 	return ps.server.Shutdown(ctx)
+}
+
+func (ps *Server) HandleWebSocket() http.Handler {
+	return websocket.Handler(ps.handleWebSocket)
+}
+
+func (ps *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	ps.HandleWebSocket().ServeHTTP(w, req)
 }
 
 func (ps *Server) handleWebSocket(ws *websocket.Conn) {

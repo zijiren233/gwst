@@ -15,3 +15,6 @@ GWST is a versatile WebSocket tunneling tool that allows you to create secure an
 
 To install GWST, make sure you have Go installed on your system, then run:
 
+```bash
+go run . ./example.yaml
+```

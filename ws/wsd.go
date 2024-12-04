@@ -19,6 +19,7 @@ import (
 
 var randomFingerprint tls.ClientHelloID
 
+//nolint:gosec
 func init() {
 	modernFingerprints := []tls.ClientHelloID{
 		tls.HelloChrome_Auto,
