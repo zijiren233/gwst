@@ -27,8 +27,11 @@ type NamedTarget struct {
 	FallbackAddrs []string
 }
 
+type GetTargetFunc func(req *http.Request) (string, []string, error)
+
 type Handler struct {
 	bufferPool             *sync.Pool
+	getTargetFunc          GetTargetFunc
 	allowedTargets         map[string][]string
 	namedTargets           map[string]NamedTarget
 	wsServer               *websocket.Server
@@ -43,6 +46,12 @@ type Handler struct {
 }
 
 type HandlerOption func(*Handler)
+
+func WithHandlerGetTargetFunc(getTargetFunc GetTargetFunc) HandlerOption {
+	return func(h *Handler) {
+		h.getTargetFunc = getTargetFunc
+	}
+}
 
 func WithHandlerDefaultTargetAddr(targetAddr string) HandlerOption {
 	return func(h *Handler) {
@@ -115,30 +124,34 @@ func checkOrigin(config *websocket.Config, req *http.Request) (err error) {
 }
 
 func NewHandler(opts ...HandlerOption) *Handler {
-	ps := &Handler{}
+	h := &Handler{}
 
 	for _, opt := range opts {
-		opt(ps)
+		opt(h)
 	}
 
-	if ps.bufferSize == 0 {
-		ps.bufferSize = DefaultBufferSize
+	if h.bufferSize == 0 {
+		h.bufferSize = DefaultBufferSize
 	}
-	ps.bufferPool = newBufferPool(ps.bufferSize)
+	h.bufferPool = newBufferPool(h.bufferSize)
 
-	if ps.udpDialReadTimeout == 0 {
-		ps.udpDialReadTimeout = DefaultUDPDialReadTimeout
+	if h.udpDialReadTimeout == 0 {
+		h.udpDialReadTimeout = DefaultUDPDialReadTimeout
 	}
-	if ps.udpEarlyDataHeaderName == "" {
-		ps.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
+	if h.udpEarlyDataHeaderName == "" {
+		h.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
 
-	ps.wsServer = &websocket.Server{
-		Handler:   ps.handleWebSocket,
+	h.wsServer = &websocket.Server{
+		Handler:   h.handleWebSocket,
 		Handshake: checkOrigin,
 	}
 
-	return ps
+	if h.getTargetFunc == nil {
+		h.getTargetFunc = h.getTarget
+	}
+
+	return h
 }
 
 func (h *Handler) getBuffer() *[]byte {
@@ -170,12 +183,13 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 		color.Red("UDP protocol is disabled")
 		return
 	}
-	target, fallbackAddrs, err := h.getTarget(
-		ws.Request().Header.Get("X-Target"),
-		ws.Request().Header.Get("X-Named-Target"),
-	)
+	target, fallbackAddrs, err := h.getTargetFunc(ws.Request())
 	if err != nil {
 		color.Red("Error getting target: %v\n", err)
+		return
+	}
+	if target == "" && len(fallbackAddrs) == 0 {
+		color.Red("No target found")
 		return
 	}
 
@@ -198,7 +212,9 @@ func getProtocol(requestProtocol string) string {
 	}
 }
 
-func (h *Handler) getTarget(requestTarget string, namedTarget string) (string, []string, error) {
+func (h *Handler) getTarget(req *http.Request) (string, []string, error) {
+	requestTarget := req.Header.Get("X-Target")
+	namedTarget := req.Header.Get("X-Named-Target")
 	if namedTarget != "" {
 		if target, ok := h.namedTargets[namedTarget]; ok {
 			return target.Addr, target.FallbackAddrs, nil
