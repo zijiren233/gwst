@@ -35,7 +35,15 @@ func TestGenerateSelfSignedCertWithECC(t *testing.T) {
 
 func TestWsServerAndDialer(t *testing.T) {
 	go func() {
-		wss := ws.NewServer("0.0.0.0:8080", "127.0.0.1:8081", "/ws", ws.WithTLS("", "", "www.microstft.com"), ws.WithSelfSignedCert(ws.WithECC()))
+		wss := ws.NewServer(
+			"0.0.0.0:8080",
+			"/ws",
+			ws.NewHandler(
+				ws.WithHandlerDefaultTargetAddr("127.0.0.1:8081"),
+			),
+			ws.WithTLS("", "", "www.microstft.com"),
+			ws.WithSelfSignedCert(ws.WithECC()),
+		)
 		err := wss.Serve()
 		if err != nil {
 			panic(err)

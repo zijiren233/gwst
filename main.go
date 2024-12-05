@@ -148,21 +148,22 @@ func printServerInfo(config Endpoint) {
 }
 
 func newServer(config Endpoint) *ws.Server {
-	var opts []ws.ServerOption = []ws.ServerOption{
-		ws.WithAllowedTargets(config.AllowedTargets),
-		ws.WithNamedTargets(config.NamedTargets),
-		ws.WithServerFallbackAddrs(config.FallbackAddrs),
-		ws.WithServerLoadBalance(config.LoadBalance),
-	}
+	handler := ws.NewHandler(
+		ws.WithHandlerDefaultTargetAddr(config.TargetAddr),
+		ws.WithHandlerAllowedTargets(config.AllowedTargets),
+		ws.WithHandlerNamedTargets(config.NamedTargets),
+		ws.WithHandlerFallbackAddrs(config.FallbackAddrs),
+		ws.WithHandlerLoadBalance(config.LoadBalance),
+	)
+	var opts []ws.ServerOption
 	if config.TLS {
 		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
 	}
-
-	return ws.NewServer(config.ListenAddr, config.TargetAddr, config.Path, opts...)
+	return ws.NewServer(config.ListenAddr, config.Path, handler, opts...)
 }
 
 func newClient(config Endpoint) *ws.Forwarder {
-	var opts []ws.ConnectOption = []ws.ConnectOption{
+	opts := []ws.ConnectOption{
 		ws.WithHost(config.Host),
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
