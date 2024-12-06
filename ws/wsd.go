@@ -304,8 +304,7 @@ func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
 	domain, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		if err.Error() == "missing port in address" {
-			port = defaultPort(tlsEnabled)
-			return addr, port, nil
+			return addr, defaultPort(tlsEnabled), nil
 		}
 		return "", "", fmt.Errorf("failed to split host and port: %w", err)
 	}
