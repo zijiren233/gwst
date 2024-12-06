@@ -177,6 +177,10 @@ func Connect(ctx context.Context, opts ...ConnectOption) (net.Conn, error) {
 }
 
 func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error) {
+	if cfg.Addr == "" && len(cfg.FallbackAddrs) > 0 {
+		cfg.Addr = cfg.FallbackAddrs[0]
+		cfg.FallbackAddrs = cfg.FallbackAddrs[1:]
+	}
 	dialCfg, err := generateDialConfig(cfg.Addr, cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
@@ -214,19 +218,6 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 	}
 
 	return nil, errors.Join(errs...)
-}
-
-func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
-	if len(fallbackAddrs) == 0 {
-		return target, fallbackAddrs
-	}
-
-	allAddrs := append([]string{target}, fallbackAddrs...)
-	rand.Shuffle(len(allAddrs), func(i, j int) {
-		allAddrs[i], allAddrs[j] = allAddrs[j], allAddrs[i]
-	})
-
-	return allAddrs[0], allAddrs[1:]
 }
 
 func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs []string) (*websocket.Conn, error) {

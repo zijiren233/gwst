@@ -201,7 +201,7 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 		ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, fallbackAddrs, protocol)
 
 	if h.loadBalance {
-		target, fallbackAddrs = h.balanceTargets(target, fallbackAddrs)
+		target, fallbackAddrs = balanceTargets(target, fallbackAddrs)
 	}
 
 	h.handle(ws, protocol, target, fallbackAddrs)
@@ -235,7 +235,7 @@ func (h *Handler) getTarget(req *http.Request) (string, []string, error) {
 	return "", nil, fmt.Errorf("target %s not allowed", requestTarget)
 }
 
-func (h *Handler) balanceTargets(target string, fallbackAddrs []string) (string, []string) {
+func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
 	if len(fallbackAddrs) == 0 {
 		return target, fallbackAddrs
 	}
