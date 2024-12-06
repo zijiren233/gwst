@@ -192,6 +192,10 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 		color.Red("No target found")
 		return
 	}
+	if target == "" && len(fallbackAddrs) > 0 {
+		target = fallbackAddrs[0]
+		fallbackAddrs = fallbackAddrs[1:]
+	}
 
 	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s\n",
 		ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, fallbackAddrs, protocol)
@@ -236,7 +240,15 @@ func (h *Handler) balanceTargets(target string, fallbackAddrs []string) (string,
 		return target, fallbackAddrs
 	}
 
-	allAddrs := append([]string{target}, fallbackAddrs...)
+	allAddrs := make([]string, 0, len(fallbackAddrs)+1)
+	if target != "" {
+		allAddrs = append(allAddrs, target)
+	}
+	for _, addr := range fallbackAddrs {
+		if addr != "" {
+			allAddrs = append(allAddrs, addr)
+		}
+	}
 	rand.Shuffle(len(allAddrs), func(i, j int) {
 		allAddrs[i], allAddrs[j] = allAddrs[j], allAddrs[i]
 	})
