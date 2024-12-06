@@ -431,17 +431,8 @@ type Dialer struct {
 	config ConnectConfig
 }
 
-func NewDialer(addr, path string, options ...ConnectOption) *Dialer {
-	wc := &Dialer{
-		config: ConnectConfig{
-			ConnectAddrConfig: ConnectAddrConfig{
-				Addr: addr,
-			},
-			ConnectDialConfig: ConnectDialConfig{
-				Path: path,
-			},
-		},
-	}
+func NewDialer(options ...ConnectOption) *Dialer {
+	wc := &Dialer{}
 	for _, option := range options {
 		option(&wc.config)
 	}

@@ -164,6 +164,8 @@ func newServer(config Endpoint) *ws.Server {
 
 func newClient(config Endpoint) *ws.Forwarder {
 	opts := []ws.ConnectOption{
+		ws.WithAddr(config.TargetAddr),
+		ws.WithPath(config.Path),
 		ws.WithHost(config.Host),
 		ws.WithTarget(config.Target),
 		ws.WithNamedTarget(config.NamedTarget),
@@ -183,6 +185,6 @@ func newClient(config Endpoint) *ws.Forwarder {
 	if config.DisableUDPEarlyData {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDPEarlyData())
 	}
-	wsDialer := ws.NewDialer(config.TargetAddr, config.Path, opts...)
+	wsDialer := ws.NewDialer(opts...)
 	return ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
 }
