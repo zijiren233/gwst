@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -86,6 +87,19 @@ func (c *ConnectConfig) Clone() *ConnectConfig {
 }
 
 type ConnectOption func(*ConnectConfig)
+
+func WithURL(u *url.URL) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Addr = u.Host
+		c.Path = u.Path
+		switch u.Scheme {
+		case "wss", "https":
+			c.TLS = true
+		default:
+			c.TLS = false
+		}
+	}
+}
 
 func WithAddr(addr string) ConnectOption {
 	return func(c *ConnectConfig) {
