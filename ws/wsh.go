@@ -257,6 +257,33 @@ func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
 }
 
 func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
+	exit := make(chan struct{})
+	defer close(exit)
+
+	go func() {
+		codec := websocket.Codec{
+			Marshal: func(_ any) ([]byte, byte, error) {
+				return nil, websocket.PingFrame, nil
+			},
+		}
+		ticker := time.NewTicker(time.Second * 30)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				err := codec.Send(ws, nil)
+				if err == nil {
+					continue
+				}
+				color.Red("Failed to send ping: %v\n", err)
+				_ = ws.Close()
+				return
+			case <-exit:
+				return
+			}
+		}
+	}()
+
 	if network == "udp" {
 		h.handleUDP(ws, addr, fallbackAddrs)
 		return
