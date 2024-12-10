@@ -256,22 +256,23 @@ func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
 	return allAddrs[0], allAddrs[1:]
 }
 
+var pingCodec = websocket.Codec{
+	Marshal: func(_ any) ([]byte, byte, error) {
+		return nil, websocket.PingFrame, nil
+	},
+}
+
 func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
 	exit := make(chan struct{})
 	defer close(exit)
 
 	go func() {
-		codec := websocket.Codec{
-			Marshal: func(_ any) ([]byte, byte, error) {
-				return nil, websocket.PingFrame, nil
-			},
-		}
 		ticker := time.NewTicker(time.Second * 30)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				err := codec.Send(ws, nil)
+				err := pingCodec.Send(ws, nil)
 				if err == nil {
 					continue
 				}
