@@ -95,7 +95,7 @@ func TestWsServerAndDialer(t *testing.T) {
 	time.Sleep(time.Second * 2)
 
 	go func() {
-		wsc := ws.NewDialer(ws.WithAddr("127.0.0.1:8080"), ws.WithPath("/ws"), ws.WithDialTLS("www.microstft.com", true))
+		wsc := ws.NewDialer(ws.WithAddr("127.0.0.1:8080"), ws.WithPath("/ws"), ws.WithDialTLS("www.microstft.com"), ws.WithInsecure())
 		conn, err := wsc.DialTCP()
 		if err != nil {
 			panic(err)
@@ -108,7 +108,7 @@ func TestWsServerAndDialer(t *testing.T) {
 		}
 	}()
 
-	wsc := ws.NewDialer(ws.WithAddr("127.0.0.1:8080"), ws.WithPath("/ws"), ws.WithDialTLS("www.microstft.com", true))
+	wsc := ws.NewDialer(ws.WithAddr("127.0.0.1:8080"), ws.WithPath("/ws"), ws.WithDialTLS("www.microstft.com"), ws.WithInsecure())
 	conn, err := wsc.DialUDP()
 	if err != nil {
 		panic(err)

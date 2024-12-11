@@ -137,11 +137,16 @@ func WithNamedTarget(namedTarget string) ConnectOption {
 	}
 }
 
-func WithDialTLS(serverName string, insecure bool) ConnectOption {
+func WithDialTLS(serverName string) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.TLS = true
 		c.ServerName = serverName
-		c.Insecure = insecure
+	}
+}
+
+func WithInsecure() ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Insecure = true
 	}
 }
 
@@ -317,7 +322,7 @@ func generateDialConfig(addr string, cfg ConnectDialConfig) (*splitedConnectDial
 func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
 	domain, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		if err.Error() == "missing port in address" {
+		if strings.Contains(err.Error(), "missing port in address") {
 			return addr, defaultPort(tlsEnabled), nil
 		}
 		return "", "", fmt.Errorf("failed to split host and port: %w", err)

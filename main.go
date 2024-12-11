@@ -174,7 +174,10 @@ func newClient(config Endpoint) *ws.Forwarder {
 	}
 	var forwarderOpts []ws.ForwarderOption
 	if config.TLS {
-		opts = append(opts, ws.WithDialTLS(config.ServerName, config.Insecure))
+		opts = append(opts, ws.WithDialTLS(config.ServerName))
+	}
+	if config.Insecure {
+		opts = append(opts, ws.WithInsecure())
 	}
 	if config.DisableTCP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableTCP())
