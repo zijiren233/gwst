@@ -137,16 +137,21 @@ func WithNamedTarget(namedTarget string) ConnectOption {
 	}
 }
 
-func WithDialTLS(serverName string) ConnectOption {
+func WithDialTLS(tls bool) ConnectOption {
 	return func(c *ConnectConfig) {
-		c.TLS = true
+		c.TLS = tls
+	}
+}
+
+func WithServerName(serverName string) ConnectOption {
+	return func(c *ConnectConfig) {
 		c.ServerName = serverName
 	}
 }
 
-func WithInsecure() ConnectOption {
+func WithInsecure(insecure bool) ConnectOption {
 	return func(c *ConnectConfig) {
-		c.Insecure = true
+		c.Insecure = insecure
 	}
 }
 
