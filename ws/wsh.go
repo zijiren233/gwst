@@ -43,6 +43,10 @@ type Handler struct {
 	loadBalance            bool
 	disableTCPProtocol     bool
 	disableUDPProtocol     bool
+
+	connectionsWg sync.WaitGroup
+	closeOnce     sync.Once
+	closeChan     chan struct{}
 }
 
 type HandlerOption func(*Handler)
@@ -124,7 +128,9 @@ func checkOrigin(config *websocket.Config, req *http.Request) (err error) {
 }
 
 func NewHandler(opts ...HandlerOption) *Handler {
-	h := &Handler{}
+	h := &Handler{
+		closeChan: make(chan struct{}),
+	}
 
 	for _, opt := range opts {
 		opt(h)
@@ -166,6 +172,8 @@ func (h *Handler) putBuffer(buffer *[]byte) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	h.connectionsWg.Add(1)
+	defer h.connectionsWg.Done()
 	h.wsServer.ServeHTTP(w, req)
 }
 
@@ -277,6 +285,10 @@ func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallba
 					continue
 				}
 				color.Red("Failed to send ping: %v\n", err)
+				_ = ws.Close()
+				return
+			case <-h.closeChan:
+				color.Yellow("Closing connection due to shutdown")
 				_ = ws.Close()
 				return
 			case <-exit:
@@ -494,4 +506,14 @@ func CopyBufferWithWriteTimeout(dst deadlineWriter, src io.Reader, buf []byte, t
 		}
 	}
 	return written, err
+}
+
+func (h *Handler) Close() {
+	h.closeOnce.Do(func() {
+		close(h.closeChan)
+	})
+}
+
+func (h *Handler) Wait() {
+	h.connectionsWg.Wait()
 }

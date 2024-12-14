@@ -176,17 +176,22 @@ func (ps *Server) Server() *http.Server {
 			ReadHeaderTimeout: time.Second * 5,
 			MaxHeaderBytes:    16 * 1024,
 		}
+		ps.server.RegisterOnShutdown(func() {
+			ps.wsHandler.Close()
+		})
 	}
 	return ps.server
 }
 
 func (ps *Server) Close() error {
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer ps.closeOnListened()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	return ps.Shutdown(timeoutCtx)
+	return ps.server.Shutdown(ctx)
 }
 
 func (ps *Server) Shutdown(ctx context.Context) error {
-	ps.closeOnListened()
+	defer ps.closeOnListened()
+	defer ps.wsHandler.Wait()
 	return ps.server.Shutdown(ctx)
 }
