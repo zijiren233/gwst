@@ -155,11 +155,13 @@ func newServer(config Endpoint) *ws.Server {
 		ws.WithHandlerFallbackAddrs(config.FallbackAddrs),
 		ws.WithHandlerLoadBalance(config.LoadBalance),
 	)
-	var opts []ws.ServerOption
+	opts := []ws.ServerOption{
+		ws.WithListenAddr(config.ListenAddr),
+	}
 	if config.TLS {
 		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
 	}
-	return ws.NewServer(config.ListenAddr, config.Path, handler, opts...)
+	return ws.NewServer(config.Path, handler, opts...)
 }
 
 func newClient(config Endpoint) *ws.Forwarder {

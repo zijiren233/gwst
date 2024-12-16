@@ -11,6 +11,7 @@ import (
 )
 
 type Server struct {
+	listener              net.Listener
 	listenErr             error
 	shutdowned            chan struct{}
 	onListened            chan struct{}
@@ -23,11 +24,23 @@ type Server struct {
 	serverName            string
 	listenAddr            string
 	selfSignedCertOptions []SelfSignedCertOption
-	onListenCloseOnce     sync.Once
+	waitListenCloseOnce   sync.Once
 	tls                   bool
 }
 
 type ServerOption func(*Server)
+
+func WithListener(listener net.Listener) ServerOption {
+	return func(ps *Server) {
+		ps.listener = listener
+	}
+}
+
+func WithListenAddr(listenAddr string) ServerOption {
+	return func(ps *Server) {
+		ps.listenAddr = listenAddr
+	}
+}
 
 func WithTLS(certFile, keyFile, serverName string) ServerOption {
 	return func(ps *Server) {
@@ -59,9 +72,8 @@ func WithSelfSignedCert(opts ...SelfSignedCertOption) ServerOption {
 	}
 }
 
-func NewServer(listenAddr, path string, wsHandler *Handler, opts ...ServerOption) *Server {
+func NewServer(path string, wsHandler *Handler, opts ...ServerOption) *Server {
 	ps := &Server{
-		listenAddr: listenAddr,
 		wsHandler:  wsHandler,
 		path:       path,
 		onListened: make(chan struct{}),
@@ -75,37 +87,25 @@ func NewServer(listenAddr, path string, wsHandler *Handler, opts ...ServerOption
 	return ps
 }
 
-func (ps *Server) closeOnListened() {
-	ps.onListenCloseOnce.Do(func() {
+func (ps *Server) closeWaitListen() {
+	ps.waitListenCloseOnce.Do(func() {
 		close(ps.onListened)
 	})
 }
 
-func (ps *Server) OnListened() <-chan struct{} {
-	return ps.onListened
-}
-
-func (ps *Server) ListenErr() error {
+func (ps *Server) WaitListen() error {
+	<-ps.onListened
 	return ps.listenErr
 }
 
-func (ps *Server) Shutdowned() <-chan struct{} {
-	return ps.shutdowned
-}
-
-func (ps *Server) ShutdownedBool() bool {
-	select {
-	case <-ps.shutdowned:
-		return true
-	default:
-		return false
-	}
+func (ps *Server) WaitShutdown() {
+	<-ps.shutdowned
 }
 
 func (ps *Server) Serve() error {
 	server := ps.Server()
 
-	defer ps.closeOnListened()
+	defer ps.closeWaitListen()
 	defer close(ps.shutdowned)
 
 	if ps.tls {
@@ -115,11 +115,6 @@ func (ps *Server) Serve() error {
 }
 
 func (ps *Server) listenAndServeTLS(server *http.Server) error {
-	addr := ps.listenAddr
-	if addr == "" {
-		addr = ":https"
-	}
-
 	if ps.tlsConfig == nil && ps.certFile == "" && ps.keyFile == "" {
 		cert, err := GenerateSelfSignedCert(ps.serverName, ps.selfSignedCertOptions...)
 		if err != nil {
@@ -135,33 +130,44 @@ func (ps *Server) listenAndServeTLS(server *http.Server) error {
 		ps.tlsConfig.ServerName = ps.serverName
 	}
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := ps.getListener()
 	if err != nil {
 		ps.listenErr = err
 		return err
 	}
 	defer ln.Close()
 
-	ps.closeOnListened()
+	ps.closeWaitListen()
 
 	server.TLSConfig = ps.tlsConfig
 
 	return server.ServeTLS(ln, ps.certFile, ps.keyFile)
 }
 
-func (ps *Server) listenAndServe(server *http.Server) error {
+func (ps *Server) getListener() (net.Listener, error) {
+	if ps.listener != nil {
+		return ps.listener, nil
+	}
 	addr := ps.listenAddr
 	if addr == "" {
-		addr = ":http"
+		if ps.tls {
+			addr = ":https"
+		} else {
+			addr = ":http"
+		}
 	}
-	ln, err := net.Listen("tcp", addr)
+	return net.Listen("tcp", addr)
+}
+
+func (ps *Server) listenAndServe(server *http.Server) error {
+	ln, err := ps.getListener()
 	if err != nil {
 		ps.listenErr = err
 		return err
 	}
 	defer ln.Close()
 
-	ps.closeOnListened()
+	ps.closeWaitListen()
 
 	return server.Serve(ln)
 }
@@ -184,14 +190,12 @@ func (ps *Server) Server() *http.Server {
 }
 
 func (ps *Server) Close() error {
-	defer ps.closeOnListened()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	return ps.server.Shutdown(ctx)
+	defer ps.closeWaitListen()
+	return ps.server.Close()
 }
 
 func (ps *Server) Shutdown(ctx context.Context) error {
-	defer ps.closeOnListened()
+	defer ps.closeWaitListen()
 	defer ps.wsHandler.Wait()
 	return ps.server.Shutdown(ctx)
 }

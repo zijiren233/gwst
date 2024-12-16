@@ -30,23 +30,22 @@ type NamedTarget struct {
 type GetTargetFunc func(req *http.Request) (string, []string, error)
 
 type Handler struct {
-	bufferPool             *sync.Pool
 	getTargetFunc          GetTargetFunc
 	allowedTargets         map[string][]string
 	namedTargets           map[string]NamedTarget
 	wsServer               *websocket.Server
+	bufferPool             *sync.Pool
+	closeChan              chan struct{}
 	udpEarlyDataHeaderName string
 	defaultTargetAddr      string
 	fallbackAddrs          []string
+	connectionsWg          sync.WaitGroup
 	bufferSize             int
 	udpDialReadTimeout     time.Duration
-	loadBalance            bool
+	closeOnce              sync.Once
 	disableTCPProtocol     bool
 	disableUDPProtocol     bool
-
-	connectionsWg sync.WaitGroup
-	closeOnce     sync.Once
-	closeChan     chan struct{}
+	loadBalance            bool
 }
 
 type HandlerOption func(*Handler)
