@@ -39,10 +39,15 @@ jobs:
           enable-micro: true
           result-dir: ./dist
 
+      - name: Get Artifact Name
+        id: artifact_name
+        run: |
+          echo "artifact_name=$(echo ${{ matrix.targets }} | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Upload Binaries
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.targets.OS }}-${{ matrix.targets.ARCH }}
+          name: ${{ steps.artifact_name.outputs.artifact_name }}
           path: dist/*
 
       - name: Release
