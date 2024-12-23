@@ -17,6 +17,8 @@ RUN apk add --no-cache bash ca-certificates su-exec tzdata && \
 
 EXPOSE 8080/tcp
 
+VOLUME [ "/config" ]
+
 ENTRYPOINT [ "/gwst" ]
 
-CMD [ "/app/config.yaml" ]
+CMD [ "/config/config.yaml" ]
