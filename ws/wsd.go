@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
 	tls "github.com/refraction-networking/utls"
 	"golang.org/x/net/websocket"
 )
@@ -143,7 +142,7 @@ func WithDialTLS(tls bool) ConnectOption {
 	}
 }
 
-func WithServerName(serverName string) ConnectOption {
+func WithDialServerName(serverName string) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.ServerName = serverName
 	}
@@ -234,7 +233,6 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 
 		ws, cerr := connectConcurrent(ctx, dialCfg, batch)
 		if cerr == nil {
-			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", cfg.Addr, err, ws.RemoteAddr().String())
 			ws.PayloadType = websocket.BinaryFrame
 			return ws, nil
 		}
@@ -281,7 +279,7 @@ func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs
 		}
 	}()
 
-	var errs []error = make([]error, 0, len(addrs))
+	errs := make([]error, 0, len(addrs))
 	for res := range results {
 		if res.err == nil {
 			return res.conn, nil

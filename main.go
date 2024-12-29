@@ -1,17 +1,34 @@
 package main
 
 import (
+	stdlog "log"
 	"os"
 	"runtime/debug"
 	"time"
 
-	"github.com/fatih/color"
+	log "github.com/sirupsen/logrus"
 	"github.com/zijiren233/gwst/ws"
 	"gopkg.in/yaml.v3"
 )
 
 func init() {
 	debug.SetGCPercent(20)
+	initLogger()
+}
+
+func initLogger() {
+	log.SetOutput(os.Stdout)
+	log.SetReportCaller(false)
+	log.SetFormatter(&log.TextFormatter{
+		ForceColors:      true,
+		DisableColors:    false,
+		DisableQuote:     true,
+		DisableSorting:   false,
+		FullTimestamp:    true,
+		TimestampFormat:  time.DateTime,
+		QuoteEmptyFields: true,
+	})
+	stdlog.SetOutput(log.StandardLogger().Writer())
 }
 
 type Endpoint struct {
@@ -40,26 +57,26 @@ type Endpoints []Endpoint
 
 func main() {
 	if len(os.Args) < 2 {
-		color.Red("Usage: gwst <config.yaml>")
+		log.Error("Usage: gwst <config.yaml>")
 		os.Exit(1)
 	}
 
 	configFile := os.Args[1]
 	yamlFile, err := os.ReadFile(configFile)
 	if err != nil {
-		color.Red("Error reading YAML file: %v", err)
+		log.Errorf("Error reading YAML file: %v", err)
 		os.Exit(1)
 	}
 
 	var endpoints Endpoints
 	err = yaml.Unmarshal(yamlFile, &endpoints)
 	if err != nil {
-		color.Red("Error parsing YAML file: %v", err)
+		log.Errorf("Error parsing YAML file: %v", err)
 		os.Exit(1)
 	}
 
 	if len(endpoints) == 0 {
-		color.Red("No endpoints found in config file")
+		log.Error("No endpoints found in config file")
 		os.Exit(1)
 	}
 
@@ -72,7 +89,7 @@ func main() {
 		go run(endpoint)
 	}
 
-	color.Magenta("All endpoints started, press Ctrl+C to stop")
+	log.Info("All endpoints started, press Ctrl+C to stop")
 	select {}
 }
 
@@ -85,13 +102,13 @@ func run(endpoint Endpoint) {
 	}
 	defer func() {
 		if err := s.Close(); err != nil {
-			color.Red("Error closing %s %v", endpoint.ListenAddr, err)
+			log.Errorf("Error closing %s %v", endpoint.ListenAddr, err)
 		}
 	}()
 	err := s.Serve()
 	if err != nil {
-		color.Red("Error serving %s %v", endpoint.ListenAddr, err)
-		color.Yellow("Restarting %s in 3 seconds...", endpoint.ListenAddr)
+		log.Errorf("Error serving %s %v", endpoint.ListenAddr, err)
+		log.Warnf("Restarting %s in 3 seconds...", endpoint.ListenAddr)
 		time.AfterFunc(time.Second*3, func() {
 			run(endpoint)
 		})
@@ -104,51 +121,52 @@ type server interface {
 }
 
 func printClientInfo(config Endpoint) {
-	color.Cyan("----------------------------------------")
+	log.Info("----------------------------------------")
 	if config.Target == "" && config.NamedTarget == "" {
-		color.Cyan("Starting client on %s -> %s", config.ListenAddr, config.TargetAddr)
+		log.Infof("Starting client on %s -> %s", config.ListenAddr, config.TargetAddr)
 	} else if config.NamedTarget != "" {
-		color.Cyan("Starting client on %s -> %s (Named: %s)", config.ListenAddr, config.TargetAddr, config.NamedTarget)
+		log.Infof("Starting client on %s -> %s (Named: %s)", config.ListenAddr, config.TargetAddr, config.NamedTarget)
 	} else {
-		color.Cyan("Starting client on %s -> %s (Target: %s)", config.ListenAddr, config.TargetAddr, config.Target)
+		log.Infof("Starting client on %s -> %s (Target: %s)", config.ListenAddr, config.TargetAddr, config.Target)
 	}
-	color.Cyan("----------------------------------------")
+	log.Info("----------------------------------------")
 }
 
 func printServerInfo(config Endpoint) {
-	color.Green("----------------------------------------")
+	log.Info("----------------------------------------")
 	if len(config.AllowedTargets) != 0 || len(config.NamedTargets) != 0 {
 		if config.TargetAddr == "" {
-			color.Green("Starting server on %s", config.ListenAddr)
+			log.Infof("Starting server on %s", config.ListenAddr)
 			if len(config.AllowedTargets) != 0 {
-				color.Yellow("\tAllowed targets: %v", config.AllowedTargets)
+				log.Warnf("\tAllowed targets: %v", config.AllowedTargets)
 			}
 			if len(config.NamedTargets) != 0 {
-				color.Yellow("\tNamed targets:")
+				log.Warn("\tNamed targets:")
 				for name, target := range config.NamedTargets {
-					color.White("\t\t%s -> %s", name, target)
+					log.Infof("\t\t%s -> %s", name, target)
 				}
 			}
 		} else {
-			color.Green("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
+			log.Infof("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
 			if len(config.AllowedTargets) != 0 {
-				color.Yellow("\tAdditional allowed targets: %v", config.AllowedTargets)
+				log.Warnf("\tAdditional allowed targets: %v", config.AllowedTargets)
 			}
 			if len(config.NamedTargets) != 0 {
-				color.Yellow("\tNamed targets:")
+				log.Warn("\tNamed targets:")
 				for name, target := range config.NamedTargets {
-					color.White("\t\t%s -> %s", name, target)
+					log.Infof("\t\t%s -> %s", name, target)
 				}
 			}
 		}
 	} else {
-		color.Green("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
+		log.Infof("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
 	}
-	color.Green("----------------------------------------")
+	log.Info("----------------------------------------")
 }
 
 func newServer(config Endpoint) *ws.Server {
 	handler := ws.NewHandler(
+		ws.WithHandlerLogger(log.StandardLogger()),
 		ws.WithHandlerDefaultTargetAddr(config.TargetAddr),
 		ws.WithHandlerAllowedTargets(config.AllowedTargets),
 		ws.WithHandlerNamedTargets(config.NamedTargets),
@@ -159,7 +177,10 @@ func newServer(config Endpoint) *ws.Server {
 		ws.WithListenAddr(config.ListenAddr),
 	}
 	if config.TLS {
-		opts = append(opts, ws.WithTLS(config.CertFile, config.KeyFile, config.ServerName))
+		opts = append(opts,
+			ws.WithTLS(config.CertFile, config.KeyFile),
+			ws.WithServerName(config.ServerName),
+		)
 	}
 	return ws.NewServer(config.Path, handler, opts...)
 }
@@ -174,10 +195,12 @@ func newClient(config Endpoint) *ws.Forwarder {
 		ws.WithFallbackAddrs(config.FallbackAddrs),
 		ws.WithLoadBalance(config.LoadBalance),
 		ws.WithDialTLS(config.TLS),
-		ws.WithServerName(config.ServerName),
+		ws.WithDialServerName(config.ServerName),
 		ws.WithInsecure(config.Insecure),
 	}
-	var forwarderOpts []ws.ForwarderOption
+	forwarderOpts := []ws.ForwarderOption{
+		ws.WithLogger(log.StandardLogger()),
+	}
 	if config.DisableTCP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableTCP())
 	}
@@ -188,5 +211,9 @@ func newClient(config Endpoint) *ws.Forwarder {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDPEarlyData())
 	}
 	wsDialer := ws.NewDialer(opts...)
-	return ws.NewForwarder(config.ListenAddr, wsDialer, forwarderOpts...)
+	return ws.NewForwarder(
+		config.ListenAddr,
+		wsDialer,
+		forwarderOpts...,
+	)
 }

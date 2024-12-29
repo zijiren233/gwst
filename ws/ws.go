@@ -42,16 +42,15 @@ func WithListenAddr(listenAddr string) ServerOption {
 	}
 }
 
-func WithTLS(certFile, keyFile, serverName string) ServerOption {
+func WithTLS(certFile, keyFile string) ServerOption {
 	return func(ps *Server) {
 		ps.tls = true
 		ps.certFile = certFile
 		ps.keyFile = keyFile
-		WithServerServerName(serverName)(ps)
 	}
 }
 
-func WithServerServerName(serverName string) ServerOption {
+func WithServerName(serverName string) ServerOption {
 	return func(ps *Server) {
 		ps.serverName = serverName
 	}
@@ -126,7 +125,7 @@ func (ps *Server) listenAndServeTLS(server *http.Server) error {
 		}
 	}
 
-	if ps.tlsConfig.ServerName == "" {
+	if ps.tlsConfig != nil && ps.tlsConfig.ServerName == "" {
 		ps.tlsConfig.ServerName = ps.serverName
 	}
 

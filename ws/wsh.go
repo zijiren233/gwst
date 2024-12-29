@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
 	"golang.org/x/net/websocket"
 )
 
@@ -30,6 +29,7 @@ type NamedTarget struct {
 type GetTargetFunc func(req *http.Request) (string, []string, error)
 
 type Handler struct {
+	log                    Logger
 	getTargetFunc          GetTargetFunc
 	allowedTargets         map[string][]string
 	namedTargets           map[string]NamedTarget
@@ -49,6 +49,12 @@ type Handler struct {
 }
 
 type HandlerOption func(*Handler)
+
+func WithHandlerLogger(logger Logger) HandlerOption {
+	return func(h *Handler) {
+		h.log = logger
+	}
+}
 
 func WithHandlerGetTargetFunc(getTargetFunc GetTargetFunc) HandlerOption {
 	return func(h *Handler) {
@@ -156,6 +162,8 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		h.getTargetFunc = h.getTarget
 	}
 
+	h.log = newSafeLogger(h.log)
+
 	return h
 }
 
@@ -183,20 +191,20 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 
 	protocol := getProtocol(ws.Request().Header.Get("X-Protocol"))
 	if h.disableTCPProtocol && protocol == "tcp" {
-		color.Red("TCP protocol is disabled")
+		h.log.Error("TCP protocol is disabled")
 		return
 	}
 	if h.disableUDPProtocol && protocol == "udp" {
-		color.Red("UDP protocol is disabled")
+		h.log.Error("UDP protocol is disabled")
 		return
 	}
 	target, fallbackAddrs, err := h.getTargetFunc(ws.Request())
 	if err != nil {
-		color.Red("Error getting target: %v\n", err)
+		h.log.Errorf("Error getting target: %v", err)
 		return
 	}
 	if target == "" && len(fallbackAddrs) == 0 {
-		color.Red("No target found")
+		h.log.Error("No target found")
 		return
 	}
 	if target == "" && len(fallbackAddrs) > 0 {
@@ -204,7 +212,7 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 		fallbackAddrs = fallbackAddrs[1:]
 	}
 
-	color.Green("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s\n",
+	h.log.Infof("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s",
 		ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, fallbackAddrs, protocol)
 
 	if h.loadBalance {
@@ -283,11 +291,11 @@ func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallba
 				if err == nil {
 					continue
 				}
-				color.Red("Failed to send ping: %v\n", err)
+				h.log.Errorf("Failed to send ping: %v", err)
 				_ = ws.Close()
 				return
 			case <-h.closeChan:
-				color.Yellow("Closing connection due to shutdown")
+				h.log.Info("Closing connection due to shutdown")
 				_ = ws.Close()
 				return
 			case <-exit:
@@ -315,23 +323,23 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 	if base64Str != "" {
 		n, err = base64.StdEncoding.Decode(*buffer, stringToBytes(base64Str))
 		if err != nil {
-			color.Red("Failed to decode X-0RTT header: %v\n", err)
+			h.log.Errorf("Failed to decode X-0RTT header: %v", err)
 			return
 		}
 	} else {
 		err = ws.SetReadDeadline(time.Now().Add(time.Second))
 		if err != nil {
-			color.Red("Failed to set read deadline: %v", err)
+			h.log.Errorf("Failed to set read deadline: %v", err)
 			return
 		}
 		n, err = ws.Read(*buffer)
 		if err != nil {
-			color.Red("Failed to read from WebSocket: %v\n", err)
+			h.log.Errorf("Failed to read from WebSocket: %v", err)
 			return
 		}
 		err = ws.SetReadDeadline(time.Time{})
 		if err != nil {
-			color.Red("Failed to set read deadline: %v", err)
+			h.log.Errorf("Failed to set read deadline: %v", err)
 			return
 		}
 	}
@@ -339,33 +347,33 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 	readBuffer, rn, conn, err := h.dialUDP(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
 	if err != nil {
 		h.putBuffer(readBuffer)
-		color.Red("Failed to connect to UDP target: %v\n", err)
+		h.log.Errorf("Failed to connect to UDP target: %v", err)
 		return
 	}
 	defer conn.Close()
 
 	if _, err = ws.Write((*readBuffer)[:rn]); err != nil {
 		h.putBuffer(readBuffer)
-		color.Red("Failed to write to WebSocket: %v\n", err)
+		h.log.Errorf("Failed to write to WebSocket: %v", err)
 		return
 	}
 
 	go func() {
 		defer h.putBuffer(readBuffer)
 		if _, err := CopyBufferWithWriteTimeout(conn, ws, *readBuffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
-			color.Yellow("Failed to copy data to Target: %v\n", err)
+			h.log.Infof("Failed to copy data to Target: %v", err)
 		}
 	}()
 
 	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
-		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+		h.log.Infof("Failed to copy data to WebSocket: %v", err)
 	}
 }
 
 func (h *Handler) handleNetwork(ws *websocket.Conn, network, addr string, fallbackAddrs []string) {
 	conn, err := dial(ws.Request().Context(), network, addr, fallbackAddrs)
 	if err != nil {
-		color.Red("Failed to connect to target: %v\n", err)
+		h.log.Errorf("Failed to connect to target: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -374,14 +382,14 @@ func (h *Handler) handleNetwork(ws *websocket.Conn, network, addr string, fallba
 		buffer := h.getBuffer()
 		defer h.putBuffer(buffer)
 		if _, err := CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
-			color.Yellow("Failed to copy data to Target: %v\n", err)
+			h.log.Infof("Failed to copy data to Target: %v", err)
 		}
 	}()
 
 	buffer := h.getBuffer()
 	defer h.putBuffer(buffer)
 	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
-		color.Yellow("Failed to copy data to WebSocket: %v\n", err)
+		h.log.Infof("Failed to copy data to WebSocket: %v", err)
 	}
 }
 
@@ -420,7 +428,7 @@ func (h *Handler) dialUDP(ctx context.Context, earlyData []byte, addr string, fa
 	for _, addr := range fallbackAddrs {
 		buffer, rn, conn, batchErr := h.dialAndCheckUDP(ctx, earlyData, addr)
 		if batchErr == nil {
-			color.Yellow("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
+			h.log.Infof("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
 			return buffer, rn, conn, nil
 		}
 		errs = append(errs, batchErr)

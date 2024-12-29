@@ -41,7 +41,8 @@ func TestWsServerAndDialer(t *testing.T) {
 				ws.WithHandlerDefaultTargetAddr("127.0.0.1:8081"),
 			),
 			ws.WithListenAddr("0.0.0.0:8080"),
-			ws.WithTLS("", "", "www.microstft.com"),
+			ws.WithTLS("", ""),
+			ws.WithServerName("www.microstft.com"),
 			ws.WithSelfSignedCert(ws.WithECC()),
 		)
 		err := wss.Serve()
@@ -99,7 +100,7 @@ func TestWsServerAndDialer(t *testing.T) {
 			ws.WithAddr("127.0.0.1:8080"),
 			ws.WithPath("/ws"),
 			ws.WithDialTLS(true),
-			ws.WithServerName("www.microstft.com"),
+			ws.WithDialServerName("www.microstft.com"),
 			ws.WithInsecure(true),
 		)
 		conn, err := wsc.DialTCP()
@@ -109,7 +110,10 @@ func TestWsServerAndDialer(t *testing.T) {
 		defer conn.Close()
 		fmt.Println("connected")
 		for {
-			conn.Write([]byte("hello"))
+			_, err := conn.Write([]byte("hello"))
+			if err != nil {
+				panic(err)
+			}
 			time.Sleep(time.Second)
 		}
 	}()
@@ -118,7 +122,7 @@ func TestWsServerAndDialer(t *testing.T) {
 		ws.WithAddr("127.0.0.1:8080"),
 		ws.WithPath("/ws"),
 		ws.WithDialTLS(true),
-		ws.WithServerName("www.microstft.com"),
+		ws.WithDialServerName("www.microstft.com"),
 		ws.WithInsecure(true),
 	)
 	conn, err := wsc.DialUDP()
@@ -128,7 +132,10 @@ func TestWsServerAndDialer(t *testing.T) {
 	defer conn.Close()
 	fmt.Println("connected")
 	for {
-		conn.Write([]byte("hello"))
+		_, err := conn.Write([]byte("hello"))
+		if err != nil {
+			panic(err)
+		}
 		time.Sleep(time.Second)
 	}
 }
