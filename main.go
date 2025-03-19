@@ -43,6 +43,7 @@ type Endpoint struct {
 	NamedTarget         string                    `yaml:"named_target"`
 	Host                string                    `yaml:"host"`
 	Path                string                    `yaml:"path"`
+	Key                 string                    `yaml:"key"`
 	TLS                 bool                      `yaml:"tls"`
 	CertFile            string                    `yaml:"cert_file"`
 	KeyFile             string                    `yaml:"key_file"`
@@ -172,6 +173,7 @@ func newServer(config Endpoint) *ws.Server {
 		ws.WithHandlerNamedTargets(config.NamedTargets),
 		ws.WithHandlerFallbackAddrs(config.FallbackAddrs),
 		ws.WithHandlerLoadBalance(config.LoadBalance),
+		ws.WithHandlerKey(config.Key),
 	)
 	opts := []ws.ServerOption{
 		ws.WithListenAddr(config.ListenAddr),
@@ -197,6 +199,7 @@ func newClient(config Endpoint) *ws.Forwarder {
 		ws.WithDialTLS(config.TLS),
 		ws.WithDialServerName(config.ServerName),
 		ws.WithInsecure(config.Insecure),
+		ws.WithKey(config.Key),
 	}
 	forwarderOpts := []ws.ForwarderOption{
 		ws.WithLogger(log.StandardLogger()),

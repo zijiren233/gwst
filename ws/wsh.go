@@ -36,6 +36,7 @@ type Handler struct {
 	wsServer               *websocket.Server
 	bufferPool             *sync.Pool
 	closeChan              chan struct{}
+	key                    string
 	udpEarlyDataHeaderName string
 	defaultTargetAddr      string
 	fallbackAddrs          []string
@@ -124,12 +125,34 @@ func WithHandlerUDPEarlyDataHeaderName(name string) HandlerOption {
 	}
 }
 
+func WithHandlerKey(key string) HandlerOption {
+	return func(h *Handler) {
+		h.key = key
+	}
+}
+
 func checkOrigin(config *websocket.Config, req *http.Request) (err error) {
 	config.Origin, err = websocket.Origin(config, req)
 	if err == nil && config.Origin == nil {
 		return errors.New("null origin")
 	}
 	return err
+}
+
+func newCheckOrigin(key string) func(config *websocket.Config, req *http.Request) (err error) {
+	if key == "" {
+		return checkOrigin
+	}
+	return func(config *websocket.Config, req *http.Request) (err error) {
+		err = checkOrigin(config, req)
+		if err != nil {
+			return err
+		}
+		if key != req.Header.Get("X-Key") {
+			return errors.New("invalid key")
+		}
+		return nil
+	}
 }
 
 func NewHandler(opts ...HandlerOption) *Handler {
@@ -155,7 +178,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 
 	h.wsServer = &websocket.Server{
 		Handler:   h.handleWebSocket,
-		Handshake: checkOrigin,
+		Handshake: newCheckOrigin(h.key),
 	}
 
 	if h.getTargetFunc == nil {

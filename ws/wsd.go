@@ -55,6 +55,7 @@ type ConnectDialConfig struct {
 	Target      string
 	NamedTarget string
 	ServerName  string
+	Key         string
 	TLS         bool
 	Insecure    bool
 	UDP         bool
@@ -187,6 +188,12 @@ func WithAppendHeaders(headers http.Header) ConnectOption {
 func WithHeaders(headers http.Header) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.Headers = headers
+	}
+}
+
+func WithKey(key string) ConnectOption {
+	return func(c *ConnectConfig) {
+		c.Key = key
 	}
 }
 
@@ -395,12 +402,12 @@ func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
-	setReqHeader(wsConfig, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers)
+	setReqHeader(wsConfig, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers, cfg.Key)
 	wsConfig.Dialer = cfg.Dialer
 	return wsConfig, nil
 }
 
-func setReqHeader(wsConfig *websocket.Config, isUDP bool, target string, namedTarget string, headers http.Header) {
+func setReqHeader(wsConfig *websocket.Config, isUDP bool, target string, namedTarget string, headers http.Header, key string) {
 	wsConfig.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
 	if target != "" {
 		wsConfig.Header.Set("X-Target", target)
@@ -413,6 +420,9 @@ func setReqHeader(wsConfig *websocket.Config, isUDP bool, target string, namedTa
 	}
 	for k, v := range headers {
 		wsConfig.Header[k] = v
+	}
+	if key != "" {
+		wsConfig.Header.Set("X-Key", key)
 	}
 }
 

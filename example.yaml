@@ -3,6 +3,7 @@
   listen_addr: ":8000"
   target_addr: "localhost:80"
   path: "/ws"
+  key: "123456"
   tls: true
   cert_file: ""
   key_file: ""
@@ -18,6 +19,7 @@
     - "127.0.0.1:8082"
   host: "www.microsoft.com"
   path: "/ws"
+  key: "123456"
   tls: true
   server_name: "www.microsoft.com"
   insecure: true
