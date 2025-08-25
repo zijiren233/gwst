@@ -11,25 +11,31 @@ import (
 
 func TestGenerateSelfSignedCert(t *testing.T) {
 	host := "localhost"
+
 	cert, err := ws.GenerateSelfSignedCert(host)
 	if err != nil {
 		t.Fatalf("Failed to generate self-signed certificate: %v", err)
 	}
+
 	if len(cert.Certificate) == 0 {
 		t.Fatalf("Certificate is empty")
 	}
+
 	t.Logf("Generated certificate: %+v", cert)
 }
 
 func TestGenerateSelfSignedCertWithECC(t *testing.T) {
 	host := "localhost"
+
 	cert, err := ws.GenerateSelfSignedCert(host, ws.WithECC())
 	if err != nil {
 		t.Fatalf("Failed to generate self-signed certificate: %v", err)
 	}
+
 	if len(cert.Certificate) == 0 {
 		t.Fatalf("Certificate is empty")
 	}
+
 	t.Logf("Generated certificate: %+v", cert)
 }
 
@@ -45,6 +51,7 @@ func TestWsServerAndDialer(t *testing.T) {
 			ws.WithServerName("www.microstft.com"),
 			ws.WithSelfSignedCert(ws.WithECC()),
 		)
+
 		err := wss.Serve()
 		if err != nil {
 			panic(err)
@@ -57,20 +64,25 @@ func TestWsServerAndDialer(t *testing.T) {
 			panic(err)
 		}
 		defer ln.Close()
+
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				panic(err)
 			}
+
 			fmt.Println("accepted tcp")
+
 			go func(c net.Conn) {
 				defer c.Close()
+
 				buf := make([]byte, 1024)
 				for {
 					n, err := c.Read(buf)
 					if err != nil {
 						panic(err)
 					}
+
 					fmt.Println("tcp", string(buf[:n]))
 				}
 			}(conn)
@@ -83,12 +95,15 @@ func TestWsServerAndDialer(t *testing.T) {
 			panic(err)
 		}
 		defer ln.Close()
+
 		for {
 			buf := make([]byte, 1024)
+
 			n, _, err := ln.ReadFromUDP(buf)
 			if err != nil {
 				panic(err)
 			}
+
 			fmt.Println("udp", string(buf[:n]))
 		}
 	}()
@@ -103,17 +118,21 @@ func TestWsServerAndDialer(t *testing.T) {
 			ws.WithDialServerName("www.microstft.com"),
 			ws.WithInsecure(true),
 		)
+
 		conn, err := wsc.DialTCP()
 		if err != nil {
 			panic(err)
 		}
 		defer conn.Close()
+
 		fmt.Println("connected")
+
 		for {
 			_, err := conn.Write([]byte("hello"))
 			if err != nil {
 				panic(err)
 			}
+
 			time.Sleep(time.Second)
 		}
 	}()
@@ -125,17 +144,21 @@ func TestWsServerAndDialer(t *testing.T) {
 		ws.WithDialServerName("www.microstft.com"),
 		ws.WithInsecure(true),
 	)
+
 	conn, err := wsc.DialUDP()
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
+
 	fmt.Println("connected")
+
 	for {
 		_, err := conn.Write([]byte("hello"))
 		if err != nil {
 			panic(err)
 		}
+
 		time.Sleep(time.Second)
 	}
 }

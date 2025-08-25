@@ -136,6 +136,7 @@ func checkOrigin(config *websocket.Config, req *http.Request) (err error) {
 	if err == nil && config.Origin == nil {
 		return errors.New("null origin")
 	}
+
 	return err
 }
 
@@ -143,14 +144,17 @@ func newCheckOrigin(key string) func(config *websocket.Config, req *http.Request
 	if key == "" {
 		return checkOrigin
 	}
+
 	return func(config *websocket.Config, req *http.Request) (err error) {
 		err = checkOrigin(config, req)
 		if err != nil {
 			return err
 		}
+
 		if key != req.Header.Get("X-Key") {
 			return errors.New("invalid key")
 		}
+
 		return nil
 	}
 }
@@ -167,11 +171,13 @@ func NewHandler(opts ...HandlerOption) *Handler {
 	if h.bufferSize == 0 {
 		h.bufferSize = DefaultBufferSize
 	}
+
 	h.bufferPool = newBufferPool(h.bufferSize)
 
 	if h.udpDialReadTimeout == 0 {
 		h.udpDialReadTimeout = DefaultUDPDialReadTimeout
 	}
+
 	if h.udpEarlyDataHeaderName == "" {
 		h.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
@@ -204,6 +210,7 @@ func (h *Handler) putBuffer(buffer *[]byte) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.connectionsWg.Add(1)
 	defer h.connectionsWg.Done()
+
 	h.wsServer.ServeHTTP(w, req)
 }
 
@@ -217,26 +224,37 @@ func (h *Handler) handleWebSocket(ws *websocket.Conn) {
 		h.log.Error("TCP protocol is disabled")
 		return
 	}
+
 	if h.disableUDPProtocol && protocol == "udp" {
 		h.log.Error("UDP protocol is disabled")
 		return
 	}
+
 	target, fallbackAddrs, err := h.getTargetFunc(ws.Request())
 	if err != nil {
 		h.log.Errorf("Error getting target: %v", err)
 		return
 	}
+
 	if target == "" && len(fallbackAddrs) == 0 {
 		h.log.Error("No target found")
 		return
 	}
+
 	if target == "" && len(fallbackAddrs) > 0 {
 		target = fallbackAddrs[0]
 		fallbackAddrs = fallbackAddrs[1:]
 	}
 
-	h.log.Infof("Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s",
-		ws.Request().RemoteAddr, ws.Request().Host, ws.RemoteAddr(), target, fallbackAddrs, protocol)
+	h.log.Infof(
+		"Received WebSocket connection:\n\tAddr: %v\n\tHost: %s\n\tOrigin: %s\n\tTarget: %s\n\tFallback: %v\n\tProtocol: %s",
+		ws.Request().RemoteAddr,
+		ws.Request().Host,
+		ws.RemoteAddr(),
+		target,
+		fallbackAddrs,
+		protocol,
+	)
 
 	if h.loadBalance {
 		target, fallbackAddrs = balanceTargets(target, fallbackAddrs)
@@ -256,12 +274,14 @@ func getProtocol(requestProtocol string) string {
 
 func (h *Handler) getTarget(req *http.Request) (string, []string, error) {
 	requestTarget := req.Header.Get("X-Target")
+
 	namedTarget := req.Header.Get("X-Named-Target")
 	if namedTarget != "" {
 		if target, ok := h.namedTargets[namedTarget]; ok {
 			return target.Addr, target.FallbackAddrs, nil
 		}
 	}
+
 	if requestTarget == "" || requestTarget == h.defaultTargetAddr || len(h.allowedTargets) == 0 {
 		return h.defaultTargetAddr, h.fallbackAddrs, nil
 	}
@@ -282,11 +302,13 @@ func balanceTargets(target string, fallbackAddrs []string) (string, []string) {
 	if target != "" {
 		allAddrs = append(allAddrs, target)
 	}
+
 	for _, addr := range fallbackAddrs {
 		if addr != "" {
 			allAddrs = append(allAddrs, addr)
 		}
 	}
+
 	rand.Shuffle(len(allAddrs), func(i, j int) {
 		allAddrs[i], allAddrs[j] = allAddrs[j], allAddrs[i]
 	})
@@ -300,13 +322,14 @@ var pingCodec = websocket.Codec{
 	},
 }
 
-func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallbackAddrs []string) {
+func (h *Handler) handle(ws *websocket.Conn, network, addr string, fallbackAddrs []string) {
 	exit := make(chan struct{})
 	defer close(exit)
 
 	go func() {
 		ticker := time.NewTicker(time.Second * 30)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-ticker.C:
@@ -314,11 +337,15 @@ func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallba
 				if err == nil {
 					continue
 				}
+
 				h.log.Errorf("Failed to send ping: %v", err)
+
 				_ = ws.Close()
+
 				return
 			case <-h.closeChan:
 				h.log.Info("Closing connection due to shutdown")
+
 				_ = ws.Close()
 				return
 			case <-exit:
@@ -331,6 +358,7 @@ func (h *Handler) handle(ws *websocket.Conn, network string, addr string, fallba
 		h.handleUDP(ws, addr, fallbackAddrs)
 		return
 	}
+
 	h.handleNetwork(ws, network, addr, fallbackAddrs)
 }
 
@@ -342,6 +370,7 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 		n   int
 		err error
 	)
+
 	base64Str := ws.Request().Header.Get(h.udpEarlyDataHeaderName)
 	if base64Str != "" {
 		n, err = base64.StdEncoding.Decode(*buffer, stringToBytes(base64Str))
@@ -355,11 +384,13 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 			h.log.Errorf("Failed to set read deadline: %v", err)
 			return
 		}
+
 		n, err = ws.Read(*buffer)
 		if err != nil {
 			h.log.Errorf("Failed to read from WebSocket: %v", err)
 			return
 		}
+
 		err = ws.SetReadDeadline(time.Time{})
 		if err != nil {
 			h.log.Errorf("Failed to set read deadline: %v", err)
@@ -367,7 +398,12 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 		}
 	}
 
-	readBuffer, rn, conn, err := h.dialUDP(ws.Request().Context(), (*buffer)[:n], addr, fallbackAddrs)
+	readBuffer, rn, conn, err := h.dialUDP(
+		ws.Request().Context(),
+		(*buffer)[:n],
+		addr,
+		fallbackAddrs,
+	)
 	if err != nil {
 		h.putBuffer(readBuffer)
 		h.log.Errorf("Failed to connect to UDP target: %v", err)
@@ -383,12 +419,15 @@ func (h *Handler) handleUDP(ws *websocket.Conn, addr string, fallbackAddrs []str
 
 	go func() {
 		defer h.putBuffer(readBuffer)
-		if _, err := CopyBufferWithWriteTimeout(conn, ws, *readBuffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+
+		if _, err := CopyBufferWithWriteTimeout(conn, ws, *readBuffer, DefaultWriteTimeout); err != nil &&
+			!errors.Is(err, net.ErrClosed) {
 			h.log.Infof("Failed to copy data to Target: %v", err)
 		}
 	}()
 
-	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil &&
+		!errors.Is(err, net.ErrClosed) {
 		h.log.Infof("Failed to copy data to WebSocket: %v", err)
 	}
 }
@@ -404,14 +443,18 @@ func (h *Handler) handleNetwork(ws *websocket.Conn, network, addr string, fallba
 	go func() {
 		buffer := h.getBuffer()
 		defer h.putBuffer(buffer)
-		if _, err := CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+
+		if _, err := CopyBufferWithWriteTimeout(conn, ws, *buffer, DefaultWriteTimeout); err != nil &&
+			!errors.Is(err, net.ErrClosed) {
 			h.log.Infof("Failed to copy data to Target: %v", err)
 		}
 	}()
 
 	buffer := h.getBuffer()
 	defer h.putBuffer(buffer)
-	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil && !errors.Is(err, net.ErrClosed) {
+
+	if _, err := CopyBufferWithWriteTimeout(ws, conn, *buffer, DefaultWriteTimeout); err != nil &&
+		!errors.Is(err, net.ErrClosed) {
 		h.log.Infof("Failed to copy data to WebSocket: %v", err)
 	}
 }
@@ -432,12 +475,19 @@ func dial(_ context.Context, network, addr string, fallbackAddrs []string) (net.
 		if batchErr == nil {
 			return conn, nil
 		}
+
 		errs = append(errs, batchErr)
 	}
+
 	return nil, errors.Join(errs...)
 }
 
-func (h *Handler) dialUDP(ctx context.Context, earlyData []byte, addr string, fallbackAddrs []string) (*[]byte, int, net.Conn, error) {
+func (h *Handler) dialUDP(
+	ctx context.Context,
+	earlyData []byte,
+	addr string,
+	fallbackAddrs []string,
+) (*[]byte, int, net.Conn, error) {
 	buffer, rn, conn, err := h.dialAndCheckUDP(ctx, earlyData, addr)
 	if err == nil {
 		return buffer, rn, conn, nil
@@ -451,15 +501,26 @@ func (h *Handler) dialUDP(ctx context.Context, earlyData []byte, addr string, fa
 	for _, addr := range fallbackAddrs {
 		buffer, rn, conn, batchErr := h.dialAndCheckUDP(ctx, earlyData, addr)
 		if batchErr == nil {
-			h.log.Infof("Warning: Target '%s' is unreachable: [%v], using fallback '%s'", addr, err, conn.RemoteAddr().String())
+			h.log.Infof(
+				"Warning: Target '%s' is unreachable: [%v], using fallback '%s'",
+				addr,
+				err,
+				conn.RemoteAddr().String(),
+			)
 			return buffer, rn, conn, nil
 		}
+
 		errs = append(errs, batchErr)
 	}
+
 	return nil, 0, nil, errors.Join(errs...)
 }
 
-func (h *Handler) dialAndCheckUDP(_ context.Context, earlyData []byte, addr string) (*[]byte, int, net.Conn, error) {
+func (h *Handler) dialAndCheckUDP(
+	_ context.Context,
+	earlyData []byte,
+	addr string,
+) (*[]byte, int, net.Conn, error) {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		return nil, 0, nil, err
@@ -470,24 +531,28 @@ func (h *Handler) dialAndCheckUDP(_ context.Context, earlyData []byte, addr stri
 		conn.Close()
 		return nil, 0, nil, err
 	}
+
 	if len(earlyData) != n {
 		conn.Close()
 		return nil, 0, nil, errors.New("invalid write result")
 	}
 
 	buffer := h.getBuffer()
+
 	err = conn.SetReadDeadline(time.Now().Add(h.udpDialReadTimeout))
 	if err != nil {
 		h.putBuffer(buffer)
 		conn.Close()
 		return nil, 0, nil, err
 	}
+
 	rn, err := conn.Read(*buffer)
 	if err != nil {
 		h.putBuffer(buffer)
 		conn.Close()
 		return nil, 0, nil, err
 	}
+
 	err = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		h.putBuffer(buffer)
@@ -503,7 +568,12 @@ type deadlineWriter interface {
 	SetWriteDeadline(time.Time) error
 }
 
-func CopyBufferWithWriteTimeout(dst deadlineWriter, src io.Reader, buf []byte, timeout time.Duration) (written int64, err error) {
+func CopyBufferWithWriteTimeout(
+	dst deadlineWriter,
+	src io.Reader,
+	buf []byte,
+	timeout time.Duration,
+) (written int64, err error) {
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
@@ -511,23 +581,29 @@ func CopyBufferWithWriteTimeout(dst deadlineWriter, src io.Reader, buf []byte, t
 			if err != nil {
 				break
 			}
+
 			nw, ew := dst.Write(buf[0:nr])
 			if nw < 0 || nr < nw {
 				nw = 0
+
 				if ew == nil {
 					ew = errors.New("invalid write result")
 				}
 			}
+
 			written += int64(nw)
+
 			if ew != nil {
 				err = ew
 				break
 			}
+
 			if nr != nw {
 				err = io.ErrShortWrite
 				break
 			}
 		}
+
 		if er != nil {
 			if er != io.EOF {
 				err = er
@@ -535,6 +611,7 @@ func CopyBufferWithWriteTimeout(dst deadlineWriter, src io.Reader, buf []byte, t
 			break
 		}
 	}
+
 	return written, err
 }
 

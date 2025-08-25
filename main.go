@@ -63,6 +63,7 @@ func main() {
 	}
 
 	configFile := os.Args[1]
+
 	yamlFile, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Errorf("Error reading YAML file: %v", err)
@@ -70,6 +71,7 @@ func main() {
 	}
 
 	var endpoints Endpoints
+
 	err = yaml.Unmarshal(yamlFile, &endpoints)
 	if err != nil {
 		log.Errorf("Error parsing YAML file: %v", err)
@@ -87,15 +89,18 @@ func main() {
 		} else {
 			printServerInfo(endpoint)
 		}
+
 		go run(endpoint)
 	}
 
 	log.Info("All endpoints started, press Ctrl+C to stop")
+
 	select {}
 }
 
 func run(endpoint Endpoint) {
 	var s server
+
 	if endpoint.IsClient {
 		s = newClient(endpoint)
 	} else {
@@ -106,6 +111,7 @@ func run(endpoint Endpoint) {
 			log.Errorf("Error closing %s %v", endpoint.ListenAddr, err)
 		}
 	}()
+
 	err := s.Serve()
 	if err != nil {
 		log.Errorf("Error serving %s %v", endpoint.ListenAddr, err)
@@ -123,6 +129,7 @@ type server interface {
 
 func printClientInfo(config Endpoint) {
 	log.Info("----------------------------------------")
+
 	if config.Target == "" && config.NamedTarget == "" {
 		log.Infof("Starting client on %s -> %s", config.ListenAddr, config.TargetAddr)
 	} else if config.NamedTarget != "" {
@@ -130,30 +137,38 @@ func printClientInfo(config Endpoint) {
 	} else {
 		log.Infof("Starting client on %s -> %s (Target: %s)", config.ListenAddr, config.TargetAddr, config.Target)
 	}
+
 	log.Info("----------------------------------------")
 }
 
 func printServerInfo(config Endpoint) {
 	log.Info("----------------------------------------")
+
 	if len(config.AllowedTargets) != 0 || len(config.NamedTargets) != 0 {
 		if config.TargetAddr == "" {
 			log.Infof("Starting server on %s", config.ListenAddr)
+
 			if len(config.AllowedTargets) != 0 {
 				log.Warnf("\tAllowed targets: %v", config.AllowedTargets)
 			}
+
 			if len(config.NamedTargets) != 0 {
 				log.Warn("\tNamed targets:")
+
 				for name, target := range config.NamedTargets {
 					log.Infof("\t\t%s -> %s", name, target)
 				}
 			}
 		} else {
 			log.Infof("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
+
 			if len(config.AllowedTargets) != 0 {
 				log.Warnf("\tAdditional allowed targets: %v", config.AllowedTargets)
 			}
+
 			if len(config.NamedTargets) != 0 {
 				log.Warn("\tNamed targets:")
+
 				for name, target := range config.NamedTargets {
 					log.Infof("\t\t%s -> %s", name, target)
 				}
@@ -162,6 +177,7 @@ func printServerInfo(config Endpoint) {
 	} else {
 		log.Infof("Starting server on %s -> %s", config.ListenAddr, config.TargetAddr)
 	}
+
 	log.Info("----------------------------------------")
 }
 
@@ -175,6 +191,7 @@ func newServer(config Endpoint) *ws.Server {
 		ws.WithHandlerLoadBalance(config.LoadBalance),
 		ws.WithHandlerKey(config.Key),
 	)
+
 	opts := []ws.ServerOption{
 		ws.WithListenAddr(config.ListenAddr),
 	}
@@ -184,6 +201,7 @@ func newServer(config Endpoint) *ws.Server {
 			ws.WithServerName(config.ServerName),
 		)
 	}
+
 	return ws.NewServer(config.Path, handler, opts...)
 }
 
@@ -201,19 +219,24 @@ func newClient(config Endpoint) *ws.Forwarder {
 		ws.WithInsecure(config.Insecure),
 		ws.WithKey(config.Key),
 	}
+
 	forwarderOpts := []ws.ForwarderOption{
 		ws.WithLogger(log.StandardLogger()),
 	}
 	if config.DisableTCP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableTCP())
 	}
+
 	if config.DisableUDP {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDP())
 	}
+
 	if config.DisableUDPEarlyData {
 		forwarderOpts = append(forwarderOpts, ws.WithDisableUDPEarlyData())
 	}
+
 	wsDialer := ws.NewDialer(opts...)
+
 	return ws.NewForwarder(
 		config.ListenAddr,
 		wsDialer,

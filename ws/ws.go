@@ -110,6 +110,7 @@ func (ps *Server) Serve() error {
 	if ps.tls {
 		return ps.listenAndServeTLS(server)
 	}
+
 	return ps.listenAndServe(server)
 }
 
@@ -119,6 +120,7 @@ func (ps *Server) listenAndServeTLS(server *http.Server) error {
 		if err != nil {
 			return fmt.Errorf("failed to generate self-signed certificate: %w", err)
 		}
+
 		ps.tlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{*cert},
 			MinVersion:   tls.VersionTLS13,
@@ -147,6 +149,7 @@ func (ps *Server) getListener() (net.Listener, error) {
 	if ps.listener != nil {
 		return ps.listener, nil
 	}
+
 	addr := ps.listenAddr
 	if addr == "" {
 		if ps.tls {
@@ -155,6 +158,7 @@ func (ps *Server) getListener() (net.Listener, error) {
 			addr = ":http"
 		}
 	}
+
 	return net.Listen("tcp", addr)
 }
 
@@ -185,6 +189,7 @@ func (ps *Server) Server() *http.Server {
 			ps.wsHandler.Close()
 		})
 	}
+
 	return ps.server
 }
 

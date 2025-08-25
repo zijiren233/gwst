@@ -25,14 +25,14 @@ const (
 )
 
 var sharedBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		buffer := make([]byte, DefaultBufferSize)
 		return &buffer
 	},
 }
 
 var sharedUDPConnInfoPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &udpConnInfo{
 			setUpDone: make(chan struct{}),
 		}
@@ -51,8 +51,9 @@ func newBufferPool(size int) *sync.Pool {
 	if size == DefaultBufferSize || size <= 0 {
 		return &sharedBufferPool
 	}
+
 	return &sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buffer := make([]byte, size)
 			return &buffer
 		},
@@ -73,16 +74,20 @@ type udpConnInfo struct {
 func (u *udpConnInfo) Close() error {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+
 	if u.closed {
 		return nil
 	}
+
 	u.closed = true
 	u.setUpDoneOnce.Do(func() {
 		close(u.setUpDone)
 	})
+
 	if u.Conn != nil {
 		return u.Conn.Close()
 	}
+
 	return nil
 }
 
@@ -92,92 +97,124 @@ func (u *udpConnInfo) Setup() (net.Conn, error) {
 	defer u.setUpDoneOnce.Do(func() {
 		close(u.setUpDone)
 	})
+
 	if u.closed {
 		return nil, net.ErrClosed
 	}
+
 	if u.dialErr != nil {
 		return nil, u.dialErr
 	}
+
 	if u.Conn != nil {
 		return u.Conn, nil
 	}
+
 	var conn net.Conn
+
 	conn, u.dialErr = u.dialer.DialUDP()
 	if u.dialErr != nil {
 		return nil, u.dialErr
 	}
+
 	u.Conn = conn
+
 	return conn, nil
 }
 
-func (u *udpConnInfo) SetupWithEarlyData(earlyData []byte, earlyDataHeaderName string) (net.Conn, error) {
+func (u *udpConnInfo) SetupWithEarlyData(
+	earlyData []byte,
+	earlyDataHeaderName string,
+) (net.Conn, error) {
 	u.dialLock.Lock()
 	defer u.dialLock.Unlock()
+
 	u.setUpDoneOnce.Do(func() {
 		close(u.setUpDone)
 	})
+
 	if u.closed {
 		return nil, net.ErrClosed
 	}
+
 	if u.dialErr != nil {
 		return nil, u.dialErr
 	}
+
 	if u.Conn != nil {
 		return u.Conn, nil
 	}
+
 	var conn net.Conn
+
 	headers := http.Header{}
 	headers.Set(earlyDataHeaderName, base64.StdEncoding.EncodeToString(earlyData))
+
 	conn, u.dialErr = u.dialer.DialUDP(WithAppendHeaders(headers))
 	if u.dialErr != nil {
 		return nil, u.dialErr
 	}
+
 	u.Conn = conn
+
 	return conn, nil
 }
 
 func (u *udpConnInfo) Read(b []byte) (int, error) {
 	<-u.setUpDone
 	u.dialLock.Lock()
+
 	if u.closed {
 		u.dialLock.Unlock()
 		return 0, net.ErrClosed
 	}
+
 	if u.dialErr != nil {
 		u.dialLock.Unlock()
 		return 0, u.dialErr
 	}
+
 	conn := u.Conn
 	u.dialLock.Unlock()
 	u.SetLastActive(time.Now())
+
 	n, err := conn.Read(b)
+
 	u.SetLastActive(time.Now())
+
 	return n, err
 }
 
 func (u *udpConnInfo) Write(b []byte) (int, error) {
 	<-u.setUpDone
 	u.dialLock.Lock()
+
 	if u.closed {
 		u.dialLock.Unlock()
 		return 0, net.ErrClosed
 	}
+
 	if u.dialErr != nil {
 		u.dialLock.Unlock()
 		return 0, u.dialErr
 	}
+
 	conn := u.Conn
 	u.dialLock.Unlock()
 	u.SetLastActive(time.Now())
+
 	err := conn.SetWriteDeadline(time.Now().Add(DefaultWriteTimeout))
 	if err != nil {
 		return 0, err
 	}
+
 	n, err := conn.Write(b)
 	if err != nil {
 		return 0, err
 	}
+
 	u.SetLastActive(time.Now())
+
 	return n, nil
 }
 
@@ -304,12 +341,15 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	if wf.udpCleanupInterval == 0 {
 		wf.udpCleanupInterval = DefaultUDPCleanupInterval
 	}
+
 	if wf.udpIdleTimeout == 0 {
 		wf.udpIdleTimeout = DefaultUDPIdleTimeout
 	}
+
 	if wf.udpEarlyDataHeaderName == "" {
 		wf.udpEarlyDataHeaderName = DefaultUDPEarlyDataHeaderName
 	}
+
 	if wf.udpMaxEarlyDataSize == 0 {
 		wf.udpMaxEarlyDataSize = DefaultUDPMaxEarlyDataSize
 	}
@@ -317,6 +357,7 @@ func NewForwarder(listenAddr string, wsDialer *Dialer, opts ...ForwarderOption) 
 	if wf.bufferSize == 0 {
 		wf.bufferSize = DefaultBufferSize
 	}
+
 	wf.bufferPool = newBufferPool(wf.bufferSize)
 
 	wf.log = newSafeLogger(wf.log)
@@ -340,6 +381,7 @@ func (wf *Forwarder) putBuffer(buffer *[]byte) {
 func (wf *Forwarder) cleanupUDPIdleConnections() {
 	ticker := time.NewTicker(wf.udpCleanupInterval)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ticker.C:
@@ -348,9 +390,11 @@ func (wf *Forwarder) cleanupUDPIdleConnections() {
 				if now.Sub(value.GetLastActive()) <= wf.udpIdleTimeout {
 					return true
 				}
+
 				if wf.udpConns.CompareAndDelete(key, value) {
 					value.Close()
 				}
+
 				return true
 			})
 		case <-wf.shutdowned:
@@ -360,6 +404,7 @@ func (wf *Forwarder) cleanupUDPIdleConnections() {
 				}
 				return true
 			})
+
 			return
 		}
 	}
@@ -408,6 +453,7 @@ func (wf *Forwarder) Serve() (err error) {
 			wf.listenErr = fmt.Errorf("failed to start TCP listener: %w", err)
 			return fmt.Errorf("failed to start TCP listener: %w", err)
 		}
+
 		wf.tcpListener = ln
 	}
 
@@ -416,6 +462,7 @@ func (wf *Forwarder) Serve() (err error) {
 			if wf.udpPoolSize == 0 {
 				wf.udpPoolSize = DefaultUDPPoolSize
 			}
+
 			udpPool, err := ants.NewPool(
 				wf.udpPoolSize,
 				ants.WithPreAlloc(wf.udpPoolPreAlloc),
@@ -426,28 +473,36 @@ func (wf *Forwarder) Serve() (err error) {
 					wf.tcpListener.Close()
 					wf.tcpListener = nil
 				}
+
 				wf.listenErr = fmt.Errorf("failed to create UDP worker pool: %w", err)
+
 				return fmt.Errorf("failed to create UDP worker pool: %w", err)
 			}
+
 			wf.udpPool = udpPool
 		}
 
 		var udpAddr *net.UDPAddr
+
 		udpAddr, err = net.ResolveUDPAddr("udp", wf.listenAddr)
 		if err != nil {
 			return fmt.Errorf("failed to resolve UDP address: %w", err)
 		}
 
 		var udpConn *net.UDPConn
+
 		udpConn, err = net.ListenUDP("udp", udpAddr)
 		if err != nil {
 			if wf.tcpListener != nil {
 				wf.tcpListener.Close()
 				wf.tcpListener = nil
 			}
+
 			wf.listenErr = fmt.Errorf("failed to start UDP listener: %w", err)
+
 			return fmt.Errorf("failed to start UDP listener: %w", err)
 		}
+
 		wf.udpConn = udpConn
 
 		go wf.cleanupUDPIdleConnections()
@@ -462,6 +517,7 @@ func (wf *Forwarder) serve() error {
 	if !wf.disableTCP && !wf.disableUDP {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+
 		go func() {
 			for {
 				select {
@@ -473,20 +529,25 @@ func (wf *Forwarder) serve() error {
 						if errors.Is(err, net.ErrClosed) {
 							return
 						}
+
 						wf.log.Errorf("Failed to process UDP: %v", err)
 					}
 				}
 			}
 		}()
+
 		for {
 			conn, err := wf.tcpListener.Accept()
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					return err
 				}
+
 				wf.log.Errorf("Failed to accept TCP connection: %v", err)
+
 				continue
 			}
+
 			go wf.handleTCP(conn)
 		}
 	} else if !wf.disableTCP {
@@ -496,9 +557,12 @@ func (wf *Forwarder) serve() error {
 				if errors.Is(err, net.ErrClosed) {
 					return err
 				}
+
 				wf.log.Errorf("Failed to accept TCP connection: %v", err)
+
 				continue
 			}
+
 			go wf.handleTCP(conn)
 		}
 	} else {
@@ -508,6 +572,7 @@ func (wf *Forwarder) serve() error {
 				if errors.Is(err, net.ErrClosed) {
 					return err
 				}
+
 				wf.log.Errorf("Failed to process UDP: %v", err)
 			}
 		}
@@ -516,6 +581,7 @@ func (wf *Forwarder) serve() error {
 
 func (wf *Forwarder) Close() error {
 	wf.closeOnListened()
+
 	var errs []error
 	if wf.tcpListener != nil {
 		err := wf.tcpListener.Close()
@@ -523,18 +589,22 @@ func (wf *Forwarder) Close() error {
 			errs = append(errs, err)
 		}
 	}
+
 	if wf.udpConn != nil {
 		err := wf.udpConn.Close()
 		if err != nil {
 			errs = append(errs, err)
 		}
 	}
+
 	if !wf.useSharedUDPPool && wf.udpPool != nil {
 		wf.udpPool.Release()
 	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing WsForwarder: %v", errs)
 	}
+
 	return nil
 }
 
@@ -551,13 +621,16 @@ func (wf *Forwarder) handleTCP(conn net.Conn) {
 	go func() {
 		buffer := wf.getBuffer()
 		defer wf.putBuffer(buffer)
+
 		_, err := CopyBufferWithWriteTimeout(wsConn, conn, *buffer, DefaultWriteTimeout)
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			wf.log.Warnf("Failed to copy data to WebSocket: %v", err)
 		}
 	}()
+
 	buffer := wf.getBuffer()
 	defer wf.putBuffer(buffer)
+
 	_, err = CopyBufferWithWriteTimeout(conn, wsConn, *buffer, DefaultWriteTimeout)
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		wf.log.Warnf("Failed to copy data to Target: %v", err)
@@ -579,6 +652,7 @@ func (wf *Forwarder) processUDP() error {
 		key := remoteAddr.String()
 		connInfo := getUDPConnInfo()
 		connInfo.dialer = wf.wsDialer
+
 		value, loaded := wf.udpConns.LoadOrStore(key, connInfo)
 		if !loaded {
 			if !wf.disableUDPEarlyData && n <= wf.udpMaxEarlyDataSize {
@@ -587,14 +661,18 @@ func (wf *Forwarder) processUDP() error {
 					wf.udpConns.CompareAndDelete(key, value)
 					return
 				}
+
 				go wf.handleUDPResponse(value, remoteAddr)
+
 				return
 			}
+
 			if _, err := value.Setup(); err != nil {
 				wf.log.Errorf("Failed to setup new UDP in websocket connection: %v", err)
 				wf.udpConns.CompareAndDelete(key, value)
 				return
 			}
+
 			go wf.handleUDPResponse(value, remoteAddr)
 		} else {
 			connInfo.dialer = nil
@@ -607,7 +685,9 @@ func (wf *Forwarder) processUDP() error {
 				wf.udpConns.CompareAndDelete(key, value)
 				return
 			}
+
 			wf.log.Errorf("Failed to write to UDP in websocket connection: %v", err)
+
 			if wf.udpConns.CompareAndDelete(key, value) {
 				value.Close()
 			}
@@ -615,12 +695,14 @@ func (wf *Forwarder) processUDP() error {
 	})
 	if err != nil {
 		wf.putBuffer(buffer)
+
 		if errors.Is(err, ants.ErrPoolOverload) {
 			wf.log.Errorf("UDP pool is overloaded, dropping packet: %v", remoteAddr.String())
 		} else {
 			wf.log.Errorf("Failed to submit UDP task: %v", err)
 		}
 	}
+
 	return nil
 }
 
@@ -628,6 +710,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 	buffer := wf.getBuffer()
 	defer func() {
 		wf.putBuffer(buffer)
+
 		if wf.udpConns.CompareAndDelete(remoteAddr.String(), value) {
 			value.Close()
 		}
@@ -639,9 +722,11 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+
 			if !errors.Is(err, io.EOF) {
 				wf.log.Errorf("Failed to read from WebSocket: %v", err)
 			}
+
 			return
 		}
 
@@ -650,12 +735,15 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			wf.log.Errorf("Failed to set write deadline: %v", err)
 			return
 		}
+
 		_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+
 			wf.log.Errorf("Failed to write to UDP: %v", err)
+
 			return
 		}
 	}

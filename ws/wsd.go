@@ -19,7 +19,6 @@ import (
 
 var randomFingerprint tls.ClientHelloID
 
-//nolint:gosec
 func init() {
 	modernFingerprints := []tls.ClientHelloID{
 		tls.HelloChrome_Auto,
@@ -91,6 +90,7 @@ type ConnectOption func(*ConnectConfig)
 func WithURL(u *url.URL) ConnectOption {
 	return func(c *ConnectConfig) {
 		c.Addr = u.Host
+
 		c.Path = u.Path
 		switch u.Scheme {
 		case "wss", "https":
@@ -211,6 +211,7 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 		cfg.Addr = cfg.FallbackAddrs[0]
 		cfg.FallbackAddrs = cfg.FallbackAddrs[1:]
 	}
+
 	dialCfg, err := generateDialConfig(cfg.Addr, cfg.ConnectDialConfig)
 	if err != nil {
 		return nil, err
@@ -236,6 +237,7 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 		if end > len(cfg.FallbackAddrs) {
 			end = len(cfg.FallbackAddrs)
 		}
+
 		batch := cfg.FallbackAddrs[i:end]
 
 		ws, cerr := connectConcurrent(ctx, dialCfg, batch)
@@ -243,13 +245,18 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 			ws.PayloadType = websocket.BinaryFrame
 			return ws, nil
 		}
+
 		errs = append(errs, cerr)
 	}
 
 	return nil, errors.Join(errs...)
 }
 
-func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs []string) (*websocket.Conn, error) {
+func connectConcurrent(
+	ctx context.Context,
+	cfg *splitedConnectDialConfig,
+	addrs []string,
+) (*websocket.Conn, error) {
 	type result struct {
 		conn *websocket.Conn
 		err  error
@@ -259,17 +266,21 @@ func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs
 	defer cancel()
 
 	results := make(chan result, len(addrs))
+
 	var wg sync.WaitGroup
 
 	for _, addr := range addrs {
 		wg.Add(1)
+
 		go func(addr string) {
 			defer wg.Done()
+
 			dialCfgCopy, err := generateDialConfig(addr, *cfg.ConnectDialConfig)
 			if err != nil {
 				results <- result{nil, err}
 				return
 			}
+
 			conn, err := connect(ctx, dialCfgCopy)
 			results <- result{conn, err}
 		}(addr)
@@ -279,6 +290,7 @@ func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs
 		wg.Wait()
 		close(results)
 		<-ctx.Done()
+
 		for res := range results {
 			if res.conn != nil {
 				res.conn.Close()
@@ -291,6 +303,7 @@ func connectConcurrent(ctx context.Context, cfg *splitedConnectDialConfig, addrs
 		if res.err == nil {
 			return res.conn, nil
 		}
+
 		errs = append(errs, res.err)
 	}
 
@@ -306,6 +319,7 @@ func generateDialConfig(addr string, cfg ConnectDialConfig) (*splitedConnectDial
 	if err != nil {
 		return nil, err
 	}
+
 	splitCfg := splitedConnectDialConfig{
 		splitAddr:         addr,
 		splitPort:         port,
@@ -337,6 +351,7 @@ func parseAddrAndPort(addr string, tlsEnabled bool) (string, string, error) {
 		}
 		return "", "", fmt.Errorf("failed to split host and port: %w", err)
 	}
+
 	return domain, port, nil
 }
 
@@ -373,11 +388,13 @@ func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Con
 		}
 
 		var tlsConn *tls.UConn
+
 		tlsConn, err = createTLSClient(dialConn, config)
 		if err != nil {
 			dialConn.Close()
 			return nil, err
 		}
+
 		dialConn = tlsConn
 	}
 
@@ -386,6 +403,7 @@ func connect(ctx context.Context, cfg *splitedConnectDialConfig) (*websocket.Con
 		dialConn.Close()
 		return nil, err
 	}
+
 	return ws, nil
 }
 
@@ -398,29 +416,46 @@ func createWebsocketConfig(cfg *ConnectDialConfig) (*websocket.Config, error) {
 		server = fmt.Sprintf("ws://%s%s", cfg.Host, cfg.Path)
 		origin = fmt.Sprintf("http://%s%s", cfg.Host, cfg.Path)
 	}
+
 	wsConfig, err := websocket.NewConfig(server, origin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create websocket config: %w", err)
 	}
+
 	setReqHeader(wsConfig, cfg.UDP, cfg.Target, cfg.NamedTarget, cfg.Headers, cfg.Key)
 	wsConfig.Dialer = cfg.Dialer
+
 	return wsConfig, nil
 }
 
-func setReqHeader(wsConfig *websocket.Config, isUDP bool, target string, namedTarget string, headers http.Header, key string) {
-	wsConfig.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36")
+func setReqHeader(
+	wsConfig *websocket.Config,
+	isUDP bool,
+	target, namedTarget string,
+	headers http.Header,
+	key string,
+) {
+	wsConfig.Header.Set(
+		"User-Agent",
+		"Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36",
+	)
+
 	if target != "" {
 		wsConfig.Header.Set("X-Target", target)
 	}
+
 	if namedTarget != "" {
 		wsConfig.Header.Set("X-Named-Target", namedTarget)
 	}
+
 	if isUDP {
 		wsConfig.Header.Set("X-Protocol", "udp")
 	}
+
 	for k, v := range headers {
 		wsConfig.Header[k] = v
 	}
+
 	if key != "" {
 		wsConfig.Header.Set("X-Key", key)
 	}
@@ -434,6 +469,7 @@ func dialWithTimeout(ctx context.Context, dialer *net.Dialer, addr, port string)
 
 func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
 	client := tls.UClient(conn, config, tls.HelloCustom)
+
 	spec, err := tls.UTLSIdToSpec(randomFingerprint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get utls spec: %w", err)
@@ -448,7 +484,10 @@ func createTLSClient(conn net.Conn, config *tls.Config) (*tls.UConn, error) {
 	}
 
 	if !hasALPNExtension {
-		spec.Extensions = append(spec.Extensions, &tls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}})
+		spec.Extensions = append(
+			spec.Extensions,
+			&tls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
+		)
 	}
 
 	if err := client.ApplyPreset(&spec); err != nil {
@@ -467,15 +506,22 @@ func NewDialer(options ...ConnectOption) *Dialer {
 	for _, option := range options {
 		option(&wc.config)
 	}
+
 	return wc
 }
 
-func (wc *Dialer) DialContext(ctx context.Context, network string, options ...ConnectOption) (net.Conn, error) {
+func (wc *Dialer) DialContext(
+	ctx context.Context,
+	network string,
+	options ...ConnectOption,
+) (net.Conn, error) {
 	cfg := wc.config.Clone()
+
 	cfg.UDP = strings.HasPrefix(network, "udp")
 	for _, option := range options {
 		option(cfg)
 	}
+
 	return ConnectWithConfig(ctx, *cfg)
 }
 
