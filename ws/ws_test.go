@@ -39,6 +39,21 @@ func TestGenerateSelfSignedCertWithECC(t *testing.T) {
 	t.Logf("Generated certificate: %+v", cert)
 }
 
+func TestGenerateSelfSignedCertWithEd25519(t *testing.T) {
+	host := "localhost"
+
+	cert, err := ws.GenerateSelfSignedCert(host, ws.WithEd25519())
+	if err != nil {
+		t.Fatalf("Failed to generate self-signed certificate: %v", err)
+	}
+
+	if len(cert.Certificate) == 0 {
+		t.Fatalf("Certificate is empty")
+	}
+
+	t.Logf("Generated certificate: %+v", cert)
+}
+
 func TestWsServerAndDialer(t *testing.T) {
 	go func() {
 		wss := ws.NewServer(

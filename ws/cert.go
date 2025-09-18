@@ -3,6 +3,7 @@ package ws
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -17,25 +18,31 @@ import (
 )
 
 type selfSignedCertConfig struct {
-	ecc bool
+	keyType string // "rsa", "ecdsa", "ed25519"
 }
 
 type SelfSignedCertOption func(*selfSignedCertConfig)
 
 func WithECC() SelfSignedCertOption {
 	return func(cfg *selfSignedCertConfig) {
-		cfg.ecc = true
+		cfg.keyType = "ecdsa"
 	}
 }
 
 func WithRSA() SelfSignedCertOption {
 	return func(cfg *selfSignedCertConfig) {
-		cfg.ecc = false
+		cfg.keyType = "rsa"
+	}
+}
+
+func WithEd25519() SelfSignedCertOption {
+	return func(cfg *selfSignedCertConfig) {
+		cfg.keyType = "ed25519"
 	}
 }
 
 func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Certificate, error) {
-	cfg := &selfSignedCertConfig{}
+	cfg := &selfSignedCertConfig{keyType: "rsa"} // default to RSA
 	for _, opt := range opts {
 		opt(cfg)
 	}
@@ -46,19 +53,23 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 		err     error
 	)
 
-	if cfg.ecc {
+	switch cfg.keyType {
+	case "ecdsa":
 		privKey, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ECDSA private key: %w", err)
 		}
-
 		pubKey = &privKey.(*ecdsa.PrivateKey).PublicKey
-	} else {
+	case "ed25519":
+		pubKey, privKey, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate Ed25519 private key: %w", err)
+		}
+	default: // rsa
 		privKey, err = rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate RSA private key: %w", err)
 		}
-
 		pubKey = &privKey.(*rsa.PrivateKey).PublicKey
 	}
 
@@ -99,16 +110,24 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 	}
 
 	privPEM := new(bytes.Buffer)
-	if cfg.ecc {
+	switch cfg.keyType {
+	case "ecdsa":
 		privBytes, err := x509.MarshalECPrivateKey(privKey.(*ecdsa.PrivateKey))
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal ECDSA private key: %w", err)
 		}
-
 		if err := pem.Encode(privPEM, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
 			return nil, fmt.Errorf("failed to encode EC private key: %w", err)
 		}
-	} else {
+	case "ed25519":
+		privBytes, err := x509.MarshalPKCS8PrivateKey(privKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal Ed25519 private key: %w", err)
+		}
+		if err := pem.Encode(privPEM, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
+			return nil, fmt.Errorf("failed to encode Ed25519 private key: %w", err)
+		}
+	default: // rsa
 		if err := pem.Encode(privPEM, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privKey.(*rsa.PrivateKey))}); err != nil {
 			return nil, fmt.Errorf("failed to encode RSA private key: %w", err)
 		}
