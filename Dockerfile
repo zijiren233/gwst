@@ -4,6 +4,8 @@ COPY ./ ./
 
 ENV CGO_ENABLED=0
 
+ENV GOEXPERIMENT=greenteagc
+
 RUN go build -trimpath -ldflags="-s -w" -o /gwst .
 
 FROM alpine:latest

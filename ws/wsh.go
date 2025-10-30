@@ -507,6 +507,7 @@ func (h *Handler) dialUDP(
 				err,
 				conn.RemoteAddr().String(),
 			)
+
 			return buffer, rn, conn, nil
 		}
 

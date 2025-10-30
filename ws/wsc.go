@@ -707,17 +707,19 @@ func (wf *Forwarder) processUDP() error {
 }
 
 func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAddr) {
-	buffer := wf.getBuffer()
+	bufferP := wf.getBuffer()
 	defer func() {
-		wf.putBuffer(buffer)
+		wf.putBuffer(bufferP)
 
 		if wf.udpConns.CompareAndDelete(remoteAddr.String(), value) {
 			value.Close()
 		}
 	}()
 
+	buffer := *bufferP
+
 	for {
-		n, err := value.Read(*buffer)
+		n, err := value.Read(buffer)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -736,7 +738,7 @@ func (wf *Forwarder) handleUDPResponse(value *udpConnInfo, remoteAddr *net.UDPAd
 			return
 		}
 
-		_, err = wf.udpConn.WriteToUDP((*buffer)[:n], remoteAddr)
+		_, err = wf.udpConn.WriteToUDP(buffer[:n], remoteAddr)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return

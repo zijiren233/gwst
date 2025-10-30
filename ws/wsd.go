@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -178,9 +179,7 @@ func WithAppendHeaders(headers http.Header) ConnectOption {
 		if c.Headers == nil {
 			c.Headers = headers
 		} else {
-			for k, v := range headers {
-				c.Headers[k] = v
-			}
+			maps.Copy(c.Headers, headers)
 		}
 	}
 }
@@ -233,10 +232,7 @@ func ConnectWithConfig(ctx context.Context, cfg ConnectConfig) (net.Conn, error)
 
 	var errs []error
 	for i := 0; i < len(cfg.FallbackAddrs); i += 3 {
-		end := i + 3
-		if end > len(cfg.FallbackAddrs) {
-			end = len(cfg.FallbackAddrs)
-		}
+		end := min(i+3, len(cfg.FallbackAddrs))
 
 		batch := cfg.FallbackAddrs[i:end]
 
@@ -452,9 +448,7 @@ func setReqHeader(
 		wsConfig.Header.Set("X-Protocol", "udp")
 	}
 
-	for k, v := range headers {
-		wsConfig.Header[k] = v
-	}
+	maps.Copy(wsConfig.Header, headers)
 
 	if key != "" {
 		wsConfig.Header.Set("X-Key", key)

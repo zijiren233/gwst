@@ -59,6 +59,7 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ECDSA private key: %w", err)
 		}
+
 		pubKey = &privKey.(*ecdsa.PrivateKey).PublicKey
 	case "ed25519":
 		pubKey, privKey, err = ed25519.GenerateKey(rand.Reader)
@@ -70,6 +71,7 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate RSA private key: %w", err)
 		}
+
 		pubKey = &privKey.(*rsa.PrivateKey).PublicKey
 	}
 
@@ -116,6 +118,7 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal ECDSA private key: %w", err)
 		}
+
 		if err := pem.Encode(privPEM, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
 			return nil, fmt.Errorf("failed to encode EC private key: %w", err)
 		}
@@ -124,6 +127,7 @@ func GenerateSelfSignedCert(host string, opts ...SelfSignedCertOption) (*tls.Cer
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal Ed25519 private key: %w", err)
 		}
+
 		if err := pem.Encode(privPEM, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
 			return nil, fmt.Errorf("failed to encode Ed25519 private key: %w", err)
 		}
